@@ -222,7 +222,10 @@ func validateSoftMaskBackdrop(c context.Context, x *model.XRefTable, d types.Dic
 			return fmt.Errorf("softMaskDict.BC: %w", err)
 		}
 		if err = validateArrayExactLength(a, objNr, "softMaskDict", "BC", components); err != nil {
-			return err
+			if x.ValidationMode != model.ValidationRelaxed {
+				return err
+			}
+			x.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
 		}
 	}
 	return validateNumericArrayValues(c, x, a, objNr, "softMaskDict", "BC")

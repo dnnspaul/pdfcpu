@@ -316,3 +316,32 @@ func TestSimpleFontWidthsCountModes(t *testing.T) {
 		}
 	}
 }
+
+func luminositySoftMaskGroup() *types.StreamDict {
+	return &types.StreamDict{Dict: types.Dict{
+		"Group": types.Dict{"S": types.Name("Transparency"), "CS": types.Name("DeviceRGB")},
+	}}
+}
+
+// TestSoftMaskBackdropLengthModes digests a BC length mismatch in relaxed mode only.
+func TestSoftMaskBackdropLengthModes(t *testing.T) {
+	const want = "softMaskDict.BC: invalid array length 1, expected 3"
+	for _, m := range validationModes {
+		t.Run(m.name, func(t *testing.T) {
+			ctx := validationModeTestContext(t, m.mode, nil)
+			d := types.Dict{"S": types.Name("Luminosity"), "BC": types.NewIntegerArray(0)}
+			err := validateSoftMaskBackdrop(t.Context(), ctx.XRefTable, d, luminositySoftMaskGroup(), 0, 0, true)
+			requireValidationModeOutcome(t, ctx, err, want, want, 0)
+		})
+	}
+}
+
+// TestSoftMaskBackdropValuesRelaxed keeps rejecting non-numeric BC values after a digested length mismatch.
+func TestSoftMaskBackdropValuesRelaxed(t *testing.T) {
+	ctx := validationModeTestContext(t, model.ValidationRelaxed, nil)
+	d := types.Dict{"S": types.Name("Luminosity"), "BC": types.Array{types.Name("Black")}}
+	err := validateSoftMaskBackdrop(t.Context(), ctx.XRefTable, d, luminositySoftMaskGroup(), 0, 0, true)
+	if err == nil || !strings.Contains(err.Error(), "softMaskDict.BC[0]: expected number") {
+		t.Fatalf("got %v, want non-numeric BC error", err)
+	}
+}
