@@ -92,6 +92,15 @@ func validationNoticeObjectNumber(err error) int {
 // ValidationReport contains the accepted validation divergences for one PDF context.
 type ValidationReport struct {
 	notices []ValidationNotice
+
+	// digested holds the (kind, object) pairs already recorded by MarkDigested.
+	digested map[digestKey]struct{}
+}
+
+// digestKey identifies one kind of digested divergence at one object.
+type digestKey struct {
+	kind  string
+	objNr int
 }
 
 // Empty reports whether the validation report contains no notices.
@@ -118,6 +127,26 @@ func (xRefTable *XRefTable) AddValidationNotice(notice ValidationNotice) {
 		return
 	}
 	xRefTable.validationReport.notices = append(xRefTable.validationReport.notices, notice)
+}
+
+// MarkDigested records that the divergence of kind at objNr is being digested.
+// It reports true only the first time kind is marked for objNr in this cross-reference
+// table's PDF context, so callers can add one notice per object in constant time.
+// Callers skip the call when objNr <= 0, because such a value names no object to key on.
+func (xRefTable *XRefTable) MarkDigested(kind string, objNr int) bool {
+	if xRefTable == nil || xRefTable.validationReport == nil {
+		return false
+	}
+	r := xRefTable.validationReport
+	key := digestKey{kind: kind, objNr: objNr}
+	if _, ok := r.digested[key]; ok {
+		return false
+	}
+	if r.digested == nil {
+		r.digested = map[digestKey]struct{}{}
+	}
+	r.digested[key] = struct{}{}
+	return true
 }
 
 // ValidationReport returns a snapshot of this PDF context's validation report.

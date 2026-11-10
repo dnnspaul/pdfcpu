@@ -37,6 +37,36 @@ func TestXRefTableAddsNoticeToOwningContext(t *testing.T) {
 	}
 }
 
+func TestMarkDigested(t *testing.T) {
+	ctx, err := NewContext(bytes.NewReader(nil), NewStatelessConfiguration())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		kind  string
+		objNr int
+		want  bool
+	}{
+		{"setOCGState", 7, true},
+		{"setOCGState", 7, false},
+		{"setOCGState", 8, true},
+		{"otherKind", 7, true},
+	}
+	for _, tt := range tests {
+		if got := ctx.XRefTable.MarkDigested(tt.kind, tt.objNr); got != tt.want {
+			t.Fatalf("MarkDigested(%q, %d): got %v, want %v", tt.kind, tt.objNr, got, tt.want)
+		}
+	}
+
+	if got := (&XRefTable{}).MarkDigested("setOCGState", 1); got {
+		t.Fatal("zero-value XRefTable: got true, want false")
+	}
+	var nilTable *XRefTable
+	if got := nilTable.MarkDigested("setOCGState", 1); got {
+		t.Fatal("nil XRefTable: got true, want false")
+	}
+}
+
 func TestValidationReportPreservesNoticeOrder(t *testing.T) {
 	ctx := &Context{}
 	ctx.AddValidationNotice(NewValidationNotice(NoticePhaseParse, NoticeDigested, "first", nil))

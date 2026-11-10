@@ -989,7 +989,12 @@ func validateSetOCGStateGroup(xRefTable *model.XRefTable, o types.Object, objNr,
 	return nil
 }
 
-func validateSetOCGStateArray(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+// digestKindSetOCGState keys the relaxed mode notice for a SetOCGState array without OCG operands.
+const digestKindSetOCGState = "setOCGState"
+
+// validateSetOCGStateArray validates the State array. dedupObjNr is the object the relaxed mode notice is
+// keyed on and anchored at, see validateActionDict.
+func validateSetOCGStateArray(xRefTable *model.XRefTable, d types.Dict, dedupObjNr int, dictName string) error {
 	const entryName = "State"
 	a, err := validateArrayEntry(xRefTable, d, 0, dictName, entryName, REQUIRED, model.V10, nil)
 	if err != nil {
@@ -1000,6 +1005,10 @@ func validateSetOCGStateArray(xRefTable *model.XRefTable, d types.Dict, dictName
 		return arrayCardinalityError(dictName, entryName, objNr, 0, "one or more operator and OCG sequences")
 	}
 	operatorSeen, operandSeen := false, false
+	// Relaxed mode digests operators without OCG operands as one notice per array.
+	// It counts them instead of recording one notice each, so a hostile array cannot multiply notices.
+	relaxed := xRefTable.ValidationMode == model.ValidationRelaxed
+	dangling, firstDangling := 0, 0
 	for i, raw := range a {
 		entryObjNr := validationObjectNumber(objNr, raw)
 		o, err := xRefTable.Dereference(raw)
@@ -1013,8 +1022,14 @@ func validateSetOCGStateArray(xRefTable *model.XRefTable, d types.Dict, dictName
 				return model.WithValidationErrorObject(err, entryObjNr)
 			}
 			if operatorSeen && !operandSeen {
-				err = fmt.Errorf("%s.%s[%d]: preceding operator has no OCG operands", dictName, entryName, i)
-				return model.WithValidationErrorObject(err, entryObjNr)
+				if !relaxed {
+					err = fmt.Errorf("%s.%s[%d]: preceding operator has no OCG operands", dictName, entryName, i)
+					return model.WithValidationErrorObject(err, entryObjNr)
+				}
+				if dangling == 0 {
+					firstDangling = i
+				}
+				dangling++
 			}
 			operatorSeen, operandSeen = true, false
 			continue
@@ -1029,17 +1044,29 @@ func validateSetOCGStateArray(xRefTable *model.XRefTable, d types.Dict, dictName
 		operandSeen = true
 	}
 	if !operandSeen {
-		err = fmt.Errorf("%s.%s[%d]: operator has no OCG operands", dictName, entryName, len(a)-1)
-		return model.WithValidationErrorObject(err, objNr)
+		if !relaxed {
+			err = fmt.Errorf("%s.%s[%d]: operator has no OCG operands", dictName, entryName, len(a)-1)
+			return model.WithValidationErrorObject(err, objNr)
+		}
+		if dangling == 0 {
+			firstDangling = len(a) - 1
+		}
+		dangling++
+	}
+	// A shared action object is validated once per page that references it. Digest it once per object.
+	if dangling > 0 && (dedupObjNr <= 0 || xRefTable.MarkDigested(digestKindSetOCGState, dedupObjNr)) {
+		err = fmt.Errorf("%s.%s[%d]: %d operator(s) without OCG operands", dictName, entryName, firstDangling, dangling)
+		err = model.WithValidationErrorObject(err, validationEntryObjectNumber(dedupObjNr, d, entryName))
+		xRefTable.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
 	}
 	return nil
 }
 
-func validateSetOCGStateActionDict(xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+func validateSetOCGStateActionDict(xRefTable *model.XRefTable, d types.Dict, dedupObjNr int, dictName string) error {
 	// see 12.6.4.12
 
 	// State, required, array
-	err := validateSetOCGStateArray(xRefTable, d, dictName)
+	err := validateSetOCGStateArray(xRefTable, d, dedupObjNr, dictName)
 	if err != nil {
 		return err
 	}
@@ -1232,7 +1259,7 @@ func validateGoTo3DViewActionDict(c context.Context, xRefTable *model.XRefTable,
 	return validate3DViewSelector(c, xRefTable, d, ownerObjNr, dictName, "V", REQUIRED, threeDActionViewSelector)
 }
 
-func validateActionDictCore(c context.Context, xRefTable *model.XRefTable, n *types.Name, d types.Dict, ownerObjNr int) error {
+func validateActionDictCore(c context.Context, xRefTable *model.XRefTable, n *types.Name, d types.Dict, ownerObjNr, dedupObjNr int) error {
 	for k, v := range map[string]struct {
 		validate            func(xRefTable *model.XRefTable, d types.Dict, dictName string) error
 		sinceVersion        model.Version
@@ -1245,18 +1272,20 @@ func validateActionDictCore(c context.Context, xRefTable *model.XRefTable, n *ty
 		"GoToE": {func(x *model.XRefTable, d types.Dict, name string) error {
 			return validateGoToEActionDict(c, x, d, ownerObjNr, name)
 		}, model.V16, model.V11},
-		"Launch":      {validateLaunchActionDict, model.V10, model.V10},
-		"Thread":      {validateThreadActionDict, model.V10, model.V10},
-		"URI":         {validateURIActionDict, model.V10, model.V10},
-		"Sound":       {validateSoundActionDict, model.V12, model.V12},
-		"Movie":       {validateMovieActionDict, model.V12, model.V12},
-		"Hide":        {validateHideActionDict, model.V12, model.V12},
-		"Named":       {validateNamedActionDict, model.V12, model.V12},
-		"SubmitForm":  {validateSubmitFormActionDict, model.V10, model.V10},
-		"ResetForm":   {validateResetFormActionDict, model.V12, model.V12},
-		"ImportData":  {validateImportDataActionDict, model.V12, model.V12},
-		"JavaScript":  {validateJavaScriptActionDict, model.V13, model.V12},
-		"SetOCGState": {validateSetOCGStateActionDict, model.V15, model.V15},
+		"Launch":     {validateLaunchActionDict, model.V10, model.V10},
+		"Thread":     {validateThreadActionDict, model.V10, model.V10},
+		"URI":        {validateURIActionDict, model.V10, model.V10},
+		"Sound":      {validateSoundActionDict, model.V12, model.V12},
+		"Movie":      {validateMovieActionDict, model.V12, model.V12},
+		"Hide":       {validateHideActionDict, model.V12, model.V12},
+		"Named":      {validateNamedActionDict, model.V12, model.V12},
+		"SubmitForm": {validateSubmitFormActionDict, model.V10, model.V10},
+		"ResetForm":  {validateResetFormActionDict, model.V12, model.V12},
+		"ImportData": {validateImportDataActionDict, model.V12, model.V12},
+		"JavaScript": {validateJavaScriptActionDict, model.V13, model.V12},
+		"SetOCGState": {func(x *model.XRefTable, d types.Dict, name string) error {
+			return validateSetOCGStateActionDict(x, d, dedupObjNr, name)
+		}, model.V15, model.V15},
 		"Rendition": {func(x *model.XRefTable, d types.Dict, name string) error {
 			return validateRenditionActionDict(c, x, d, ownerObjNr, name)
 		}, model.V15, model.V14},
@@ -1292,6 +1321,10 @@ type activeContentOrigin struct {
 	source     activeContentSource
 	trigger    string
 	ownerObjNr int
+	// holderObjNr is the nearest indirect container (/AA dict, action, or Next array) that holds an
+	// inline action, 0 if none. It keys the relaxed mode dedup of an inline action with no object
+	// number of its own, see validateActionDict.
+	holderObjNr int
 }
 
 func defaultActiveContentOrigin() activeContentOrigin {
@@ -1427,6 +1460,11 @@ func validateNextAction(c context.Context, xRefTable *model.XRefTable, o types.O
 		return nil
 	}
 
+	// An inline action in an indirect Next array is held by the array.
+	if objNr > 0 {
+		origin.holderObjNr = objNr
+	}
+
 	for i, v := range a {
 		if err := contextutil.Check(c); err != nil {
 			return err
@@ -1473,14 +1511,27 @@ func validateActionDict(c context.Context, xRefTable *model.XRefTable, d types.D
 	}
 
 	if s != nil {
-		err = validateActionDictCore(c, xRefTable, s, d, ownerObjNr)
+		// An inline action has no object number, so it is keyed on the object that holds it.
+		dedupObjNr := ownerObjNr
+		if dedupObjNr == 0 {
+			dedupObjNr = origin.holderObjNr
+		}
+		if dedupObjNr == 0 {
+			dedupObjNr = origin.ownerObjNr
+		}
+		err = validateActionDictCore(c, xRefTable, s, d, ownerObjNr, dedupObjNr)
 		if err != nil {
 			return err
 		}
 	}
 
 	if o, ok := d.Find("Next"); ok {
-		if err := validateNextAction(c, xRefTable, o, depth, visit, origin); err != nil {
+		// An inline Next action is held by this action dict. An indirect action is its own holder.
+		nextOrigin := origin
+		if ownerObjNr > 0 {
+			nextOrigin.holderObjNr = ownerObjNr
+		}
+		if err := validateNextAction(c, xRefTable, o, depth, visit, nextOrigin); err != nil {
 			return err
 		}
 	}
@@ -1520,6 +1571,8 @@ func validateAdditionalActions(c context.Context, xRefTable *model.XRefTable, di
 
 func validateAdditionalActionsWithOwner(c context.Context, xRefTable *model.XRefTable, dict types.Dict, ownerObjNr int, dictName, entryName string, required bool, sinceVersion model.Version, source string) (err error) {
 	actionsObjNr := validationEntryObjectNumber(ownerObjNr, dict, entryName)
+	// Inline actions in this dict are held by the /AA dict itself when it is indirect, else by its owner.
+	holderObjNr := validationEntryObjectNumber(0, dict, entryName)
 	defer func() {
 		err = model.WithValidationErrorObject(err, actionsObjNr)
 	}()
@@ -1579,10 +1632,11 @@ func validateAdditionalActionsWithOwner(c context.Context, xRefTable *model.XRef
 		}
 
 		origin := activeContentOrigin{
-			owner:      additionalActionOwner(source, k),
-			source:     activeContentSourceAdditionalAction,
-			trigger:    k,
-			ownerObjNr: ownerObjNr,
+			owner:       additionalActionOwner(source, k),
+			source:      activeContentSourceAdditionalAction,
+			trigger:     k,
+			ownerObjNr:  ownerObjNr,
+			holderObjNr: holderObjNr,
 		}
 		err = validateActionDictObjectWithOrigin(
 			c, xRefTable, d, v, fmt.Sprintf("additional action %s.%s.%s", dictName, entryName, k), origin,
