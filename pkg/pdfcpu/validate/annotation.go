@@ -1382,14 +1382,26 @@ func validateAnnotationDictRedact(xRefTable *model.XRefTable, d types.Dict, dict
 	return err
 }
 
-func validateRichMediaAnnotation(c context.Context, xRefTable *model.XRefTable, d types.Dict, dictName string) error {
+// digestKindRichMediaContent keys the relaxed mode notice for a RichMedia annotation without RichMediaContent.
+const digestKindRichMediaContent = "richMediaContent"
+
+func validateRichMediaAnnotation(c context.Context, xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, dictName string) error {
 	// see 13.7.2.1
 	// See Adobe Supplement to ISO 32000, extension level 3, 9.6.1.
 	rawContent := d["RichMediaContent"]
 	contentObjNr := validationObjectNumber(0, rawContent)
 	content, err := validateDictEntry(xRefTable, d, 0, dictName, "RichMediaContent", REQUIRED, model.V10, nil)
 	if err != nil {
-		return err
+		if rawContent != nil || xRefTable.ValidationMode != model.ValidationRelaxed {
+			return err
+		}
+		// A shared annotation is validated once per page that references it. Digest it once per object.
+		if ownerObjNr > 0 && !xRefTable.MarkDigested(digestKindRichMediaContent, ownerObjNr) {
+			return nil
+		}
+		err = model.WithValidationErrorObject(err, ownerObjNr)
+		xRefTable.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
+		return nil
 	}
 	_, err = validateMediaObject(c, rawContent, richMediaContentValidation, func() error {
 		return validateRichMediaContent(c, xRefTable, content, contentObjNr)
@@ -1960,7 +1972,7 @@ func validateAnnotationDictConcrete(c context.Context, xRefTable *model.XRefTabl
 		return validateAnnotationDictScreen(c, x, d, ownerObjNr, name)
 	}
 	richMedia := func(x *model.XRefTable, d types.Dict, name string) error {
-		return validateRichMediaAnnotation(c, x, d, name)
+		return validateRichMediaAnnotation(c, x, d, ownerObjNr, name)
 	}
 	threeD := func(x *model.XRefTable, d types.Dict, name string) error {
 		return validateAnnotationDict3D(c, x, d, ownerObjNr, name)

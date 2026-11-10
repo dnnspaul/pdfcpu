@@ -371,3 +371,52 @@ func TestFormFieldMissingTypeModes(t *testing.T) {
 		})
 	}
 }
+
+func richMediaAnnotation() types.Dict {
+	return types.Dict{
+		"Type":    types.Name("Annot"),
+		"Subtype": types.Name("RichMedia"),
+		"Rect":    types.NewIntegerArray(0, 0, 10, 10),
+	}
+}
+
+// TestRichMediaMissingContentModes digests a RichMedia annotation without RichMediaContent in relaxed mode only.
+func TestRichMediaMissingContentModes(t *testing.T) {
+	const want = "dict=RichMedia required entry=RichMediaContent missing"
+	for _, m := range validationModes {
+		t.Run(m.name, func(t *testing.T) {
+			ctx := validationModeTestContext(t, m.mode, nil)
+			_, err := validateAnnotationDict(t.Context(), ctx.XRefTable, richMediaAnnotation(), 5)
+			requireValidationModeOutcome(t, ctx, err, want, want, 5)
+		})
+	}
+}
+
+// TestRichMediaSharedAnnotationDigestedOnce digests a shared RichMedia annotation without content
+// once per annotation object, however many page visits reference it.
+func TestRichMediaSharedAnnotationDigestedOnce(t *testing.T) {
+	const want = "dict=RichMedia required entry=RichMediaContent missing"
+	ctx := validationModeTestContext(t, model.ValidationRelaxed, nil)
+	for i := 0; i < 100; i++ {
+		if _, err := validateAnnotationDict(t.Context(), ctx.XRefTable, richMediaAnnotation(), 5); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := validateAnnotationDict(t.Context(), ctx.XRefTable, richMediaAnnotation(), 6); err != nil {
+		t.Fatal(err)
+	}
+	notices := ctx.ValidationReport().Notices()
+	if len(notices) != 2 || notices[0].ObjectNumber != 5 || notices[1].ObjectNumber != 6 || notices[0].Message != want {
+		t.Fatalf("notices: got %+v, want one notice for obj#5 and one for obj#6", notices)
+	}
+}
+
+// TestRichMediaInvalidContentRelaxed keeps rejecting RichMediaContent of the wrong type.
+func TestRichMediaInvalidContentRelaxed(t *testing.T) {
+	ctx := validationModeTestContext(t, model.ValidationRelaxed, nil)
+	d := richMediaAnnotation()
+	d["RichMediaContent"] = types.Integer(1)
+	if _, err := validateAnnotationDict(t.Context(), ctx.XRefTable, d, 5); err == nil {
+		t.Fatal("expected invalid RichMediaContent error")
+	}
+}
