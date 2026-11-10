@@ -579,10 +579,6 @@ func simpleFontWidthCount(firstChar, lastChar int) (int, bool) {
 	return span + 1, true
 }
 
-func relaxedSimpleFontWidthCount(actual, expected int) bool {
-	return actual > 0 && (actual == expected-1 || actual > expected)
-}
-
 func relaxedEmptySimpleFontWidths(xRefTable *model.XRefTable, firstChar, lastChar, widthCount int) bool {
 	return xRefTable.ValidationMode == model.ValidationRelaxed && firstChar == 65535 && lastChar == 0 && widthCount == 0
 }
@@ -613,7 +609,7 @@ func validateSimpleFontWidths(xRefTable *model.XRefTable, d types.Dict, ownerObj
 	strictFailure = arrayCardinalityError(
 		dictName, "Widths", validationEntryObjectNumber(ownerObjNr, d, "Widths"), len(widths), constraint,
 	)
-	if xRefTable.ValidationMode == model.ValidationRelaxed && relaxedSimpleFontWidthCount(len(widths), expected) {
+	if xRefTable.ValidationMode == model.ValidationRelaxed && len(widths) > 0 {
 		return strictFailure, nil
 	}
 	return nil, strictFailure

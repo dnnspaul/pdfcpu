@@ -17,6 +17,7 @@ limitations under the License.
 package validate
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -291,5 +292,27 @@ func TestSetOCGStateInlineNextUnderIndirectAction(t *testing.T) {
 	notices := ctx.ValidationReport().Notices()
 	if len(notices) != 1 || notices[0].Message != want || notices[0].ObjectNumber != 7 {
 		t.Fatalf("notices: got %+v, want one notice %q for obj#7", notices, want)
+	}
+}
+
+// TestSimpleFontWidthsCountModes digests any non-empty Widths count mismatch in relaxed mode only.
+func TestSimpleFontWidthsCountModes(t *testing.T) {
+	for _, count := range []int{190, 223, 230} {
+		for _, m := range validationModes {
+			t.Run(fmt.Sprintf("%d/%s", count, m.name), func(t *testing.T) {
+				ctx := validationModeTestContext(t, m.mode, nil)
+				d := types.Dict{
+					"Type":      types.Name("Font"),
+					"Subtype":   types.Name("TrueType"),
+					"BaseFont":  types.Name("ShortWidths"),
+					"FirstChar": types.Integer(32),
+					"LastChar":  types.Integer(255),
+					"Widths":    types.NewIntegerArray(make([]int, count)...),
+				}
+				_, err := validateTrueTypeFontDict(ctx.XRefTable, d, 2)
+				want := fmt.Sprintf("trueTypeFontDict.Widths: invalid array length %d, expected 224 to match FirstChar 32 and LastChar 255", count)
+				requireValidationModeOutcome(t, ctx, err, want, want, 2)
+			})
+		}
 	}
 }
