@@ -33,7 +33,7 @@ var validationModes = []struct {
 	{"relaxed", model.ValidationRelaxed},
 }
 
-func validationModeTestContext(t *testing.T, mode int, objects map[int]types.Object) *model.Context {
+func validationModeTestContext(t testing.TB, mode int, objects map[int]types.Object) *model.Context {
 	t.Helper()
 	ctx, err := model.NewContext(strings.NewReader(""), model.NewDefaultConfiguration())
 	if err != nil {
@@ -418,5 +418,112 @@ func TestRichMediaInvalidContentRelaxed(t *testing.T) {
 	d["RichMediaContent"] = types.Integer(1)
 	if _, err := validateAnnotationDict(t.Context(), ctx.XRefTable, d, 5); err == nil {
 		t.Fatal("expected invalid RichMediaContent error")
+	}
+}
+
+// TestStructureTreeCycleModes digests a structure element whose K refers back to its parent in relaxed mode only.
+func TestStructureTreeCycleModes(t *testing.T) {
+	for _, m := range validationModes {
+		t.Run(m.name, func(t *testing.T) {
+			root := types.Dict{"Type": types.Name("StructTreeRoot"), "K": *types.NewIndirectRef(11, 0)}
+			ctx := validationModeTestContext(t, m.mode, map[int]types.Object{
+				4: root,
+				11: types.Dict{
+					"Type": types.Name("StructElem"),
+					"S":    types.Name("Document"),
+					"P":    *types.NewIndirectRef(4, 0),
+					"K":    *types.NewIndirectRef(12, 0),
+				},
+				12: types.Dict{
+					"Type": types.Name("StructElem"),
+					"S":    types.Name("P"),
+					"P":    *types.NewIndirectRef(11, 0),
+					"K":    types.Array{types.Integer(0), *types.NewIndirectRef(11, 0)},
+				},
+			})
+			err := validateStructTreeRootDict(t.Context(), ctx.XRefTable, root, 4)
+			requireValidationModeOutcome(t, ctx, err,
+				"circular structure tree", "structure element K[1] obj#11: circular structure tree", 11)
+		})
+	}
+}
+
+// TestStructureTreeIDTreeOnlyCycleModes digests a cycle reached only through an IDTree element in relaxed mode only.
+func TestStructureTreeIDTreeOnlyCycleModes(t *testing.T) {
+	for _, m := range validationModes {
+		t.Run(m.name, func(t *testing.T) {
+			ctx := validationModeTestContext(t, m.mode, map[int]types.Object{
+				31: types.Dict{
+					"Type": types.Name("StructElem"),
+					"S":    types.Name("P"),
+					"P":    *types.NewIndirectRef(30, 0),
+					"K":    types.Array{types.Integer(0), *types.NewIndirectRef(30, 0)},
+				},
+				30: types.Dict{
+					"Type": types.Name("StructElem"),
+					"S":    types.Name("Document"),
+					"P":    *types.NewIndirectRef(31, 0),
+					"K":    types.Array{*types.NewIndirectRef(31, 0)},
+				},
+			})
+			element := ctx.Table[30].Object.(types.Dict)
+			err := validateStructElementDictContext(t.Context(), ctx.XRefTable, element, true)
+			requireValidationModeOutcome(t, ctx, err,
+				"circular structure tree", "structure element K[0] obj#31: circular structure tree", 31)
+		})
+	}
+}
+
+// structureTreeSelfCycles builds a StructTreeRoot whose K array holds n elements,
+// each an independent StructElem whose K refers back to itself.
+func structureTreeSelfCycles(n int) (types.Dict, map[int]types.Object) {
+	root := types.Dict{"Type": types.Name("StructTreeRoot")}
+	objects := map[int]types.Object{4: root}
+	kids := make(types.Array, 0, n)
+	for i := 0; i < n; i++ {
+		objNr := 100 + i
+		kids = append(kids, *types.NewIndirectRef(objNr, 0))
+		objects[objNr] = types.Dict{
+			"Type": types.Name("StructElem"),
+			"S":    types.Name("P"),
+			"P":    *types.NewIndirectRef(4, 0),
+			"K":    types.Array{*types.NewIndirectRef(objNr, 0)},
+		}
+	}
+	root["K"] = kids
+	return root, objects
+}
+
+// TestStructureTreeSelfCycleScaling checks that many independent self-cycles each produce
+// exactly one digested notice, in order.
+func TestStructureTreeSelfCycleScaling(t *testing.T) {
+	const n = 5000
+	root, objects := structureTreeSelfCycles(n)
+	ctx := validationModeTestContext(t, model.ValidationRelaxed, objects)
+	if err := validateStructTreeRootDict(t.Context(), ctx.XRefTable, root, 4); err != nil {
+		t.Fatal(err)
+	}
+	notices := ctx.ValidationReport().Notices()
+	if len(notices) != n {
+		t.Fatalf("notice count: got %d, want %d", len(notices), n)
+	}
+	for i, notice := range notices {
+		if notice.ObjectNumber != 100+i || notice.Disposition != model.NoticeDigested {
+			t.Fatalf("notice %d: got %+v, want digested obj#%d", i, notice, 100+i)
+		}
+	}
+}
+
+// BenchmarkStructureTreeSelfCycles is an optional guard for the relaxed self-cycle path.
+// It asserts no timings; run it with -bench StructureTreeSelfCycles.
+func BenchmarkStructureTreeSelfCycles(b *testing.B) {
+	root, objects := structureTreeSelfCycles(5000)
+	for b.Loop() {
+		b.StopTimer()
+		ctx := validationModeTestContext(b, model.ValidationRelaxed, objects)
+		b.StartTimer()
+		if err := validateStructTreeRootDict(b.Context(), ctx.XRefTable, root, 4); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

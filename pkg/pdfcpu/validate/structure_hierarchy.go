@@ -18,6 +18,7 @@ package validate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/pdfcpu/pdfcpu/internal/contextutil"
@@ -56,7 +57,11 @@ func structureHierarchyObject(c context.Context, x *model.XRefTable, raw types.O
 	}
 	n, err := enterStructureTreeObject(visit, raw)
 	if err != nil {
-		return err
+		if x.ValidationMode != model.ValidationRelaxed || !errors.Is(err, model.ErrStructureTreeCycle) {
+			return err
+		}
+		recordStructureTreeCycleNotice(x, n, model.WrapRecursionError(objectContext(label, raw), err))
+		return nil
 	}
 	defer visit.Leave(n)
 	o, err := x.Dereference(raw)
@@ -78,6 +83,19 @@ func structureHierarchyObject(c context.Context, x *model.XRefTable, raw types.O
 		}
 	}
 	return nil
+}
+
+// digestKindStructureTreeCycle keys the relaxed mode notice for a structure tree cycle.
+const digestKindStructureTreeCycle = "structureTreeCycle"
+
+// recordStructureTreeCycleNotice digests a relaxed mode structure tree cycle once per cycle target object.
+// The hierarchy pass and the IDTree traversal can both reach the same cycle.
+func recordStructureTreeCycleNotice(x *model.XRefTable, objNr int, err error) {
+	if objNr > 0 && !x.MarkDigested(digestKindStructureTreeCycle, objNr) {
+		return
+	}
+	err = model.WithValidationErrorObject(err, objNr)
+	x.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
 }
 
 func structureHierarchyDict(c context.Context, x *model.XRefTable, d types.Dict, n, depth int, visit *structureTraversal, seen map[int]bool) error {

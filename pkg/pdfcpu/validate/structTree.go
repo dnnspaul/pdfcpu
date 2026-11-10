@@ -199,6 +199,11 @@ func validateStructElementDictEntryKArrayElement(xRefTable *model.XRefTable, raw
 
 	objNr, err := enterStructureTreeObject(visit, rawObject)
 	if err != nil {
+		if xRefTable.ValidationMode == model.ValidationRelaxed && errors.Is(err, model.ErrStructureTreeCycle) {
+			// Structure elements reached only through IDTree are not visited by validateStructureHierarchy.
+			recordStructureTreeCycleNotice(xRefTable, objNr, model.WrapRecursionError(context, err))
+			return nil
+		}
 		err = fmt.Errorf("%s: %w", context, err)
 		return err
 	}
