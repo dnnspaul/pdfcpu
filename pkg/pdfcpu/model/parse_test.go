@@ -655,3 +655,26 @@ func TestDetectKeywords(t *testing.T) {
 	}
 
 }
+
+// TestParseObjectAttributesKeywordRemnant parses a header reached through an offset that points into the preceding endobj.
+func TestParseObjectAttributesKeywordRemnant(t *testing.T) {
+	const remainder = "\n<< /Type /Pages >>\nendobj\n"
+	for _, prefix := range []string{"bj\n", "bj\r\n", "bj\r", "j\n"} {
+		t.Run(fmt.Sprintf("%q", prefix), func(t *testing.T) {
+			line := prefix + "2 0 obj" + remainder
+			objNr, genNr, err := ParseObjectAttributes(&line)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if objNr == nil || genNr == nil {
+				t.Fatal("missing object or generation number")
+			}
+			if *objNr != 2 || *genNr != 0 {
+				t.Fatalf("got %d %d, want 2 0", *objNr, *genNr)
+			}
+			if line != remainder {
+				t.Fatalf("remaining data = %q, want %q", line, remainder)
+			}
+		})
+	}
+}

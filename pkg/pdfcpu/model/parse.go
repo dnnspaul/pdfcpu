@@ -269,8 +269,11 @@ func cleanObjProlog(s string) (string, error) {
 		case r >= '0' && r <= '9' || r == ' ':
 			b.WriteRune(r)
 		case r == 0x00 || r == '\t' || r == '\n' || r == '\f' || r == '\r':
-			// Preserve PDF whitespace as a separator between numbers (7.2.3).
-			b.WriteRune(' ')
+			// Map PDF whitespace to a separator between numbers (7.2.3), but drop it
+			// before anything has been kept, e.g. after an endobj remnant.
+			if b.Len() > 0 {
+				b.WriteRune(' ')
+			}
 		}
 	}
 	return b.String(), nil
