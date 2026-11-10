@@ -498,7 +498,11 @@ func validateFormFieldParts(c context.Context, xRefTable *model.XRefTable, objNr
 		return err
 	}
 	if fieldType == nil {
-		return errors.New("form field: missing effective field type")
+		err = model.WithValidationErrorObject(errors.New("form field: missing effective field type"), objNr)
+		if xRefTable.ValidationMode != model.ValidationRelaxed {
+			return err
+		}
+		xRefTable.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
 	}
 
 	// Validate widget annotation - Validation of AA redundant because of merged acrofield with widget annotation.

@@ -345,3 +345,29 @@ func TestSoftMaskBackdropValuesRelaxed(t *testing.T) {
 		t.Fatalf("got %v, want non-numeric BC error", err)
 	}
 }
+
+// TestFormFieldMissingTypeModes digests a widget listed in Fields whose type lives only on its parent.
+func TestFormFieldMissingTypeModes(t *testing.T) {
+	for _, m := range validationModes {
+		t.Run(m.name, func(t *testing.T) {
+			widget := *types.NewIndirectRef(22, 0)
+			ctx := validationModeTestContext(t, m.mode, map[int]types.Object{
+				21: types.Dict{
+					"FT":   types.Name("Btn"),
+					"Ff":   types.Integer(49152),
+					"T":    types.StringLiteral("choice"),
+					"Kids": types.Array{widget},
+				},
+				22: types.Dict{
+					"Type":    types.Name("Annot"),
+					"Subtype": types.Name("Widget"),
+					"Rect":    types.NewIntegerArray(0, 0, 10, 10),
+					"Parent":  *types.NewIndirectRef(21, 0),
+				},
+			})
+			err := validateFormFields(t.Context(), ctx.XRefTable, types.Array{widget}, 0, false)
+			requireValidationModeOutcome(t, ctx, err,
+				"dict=formFieldDict required entry=FT missing", "form field: missing effective field type", 22)
+		})
+	}
+}
