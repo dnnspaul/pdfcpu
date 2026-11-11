@@ -980,6 +980,21 @@ func NewRC4Configuration(userPW, ownerPW string, keyLength int) *Configuration {
 	return c
 }
 
+// NewTolerantConfiguration returns a default configuration for reading PDFs
+// from untrusted sources: relaxed validation, bounded object numbers and
+// notices, and removal of an invalid structure tree.
+// It is the configuration api.ReadAndValidateWithReport uses for a nil conf.
+func NewTolerantConfiguration() *Configuration {
+	c := NewDefaultConfiguration()
+	c.ValidationMode = ValidationRelaxed
+	// ISO 32000-1 Annex C: the largest object number a conforming PDF uses.
+	c.Limits.MaxObjectNumber = 8_388_607
+	c.Limits.MaxRetainedNotices = 1_000
+	c.Limits.MaxNotices = 250_000
+	c.RemoveInvalidStructTree = true
+	return c
+}
+
 // EolString returns a string rep for the eol in effect.
 func (c *Configuration) EolString() string {
 	var s string
