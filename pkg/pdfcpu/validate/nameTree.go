@@ -561,6 +561,10 @@ func validateURLSNameTreeValue(c context.Context, xRefTable *model.XRefTable, o 
 	return validateWebCaptureNameTreeValue(c, xRefTable, o, "URLS")
 }
 
+// digestKindEmbeddedFileStream keys the relaxed mode notice for an EmbeddedFiles name tree value
+// without a matching embedded file stream.
+const digestKindEmbeddedFileStream = "embeddedFileStream"
+
 func validateEmbeddedFilesNameTreeValue(xRefTable *model.XRefTable, o types.Object, sinceVersion model.Version) error {
 	// see 7.11.4
 
@@ -608,6 +612,13 @@ func validateEmbeddedFilesNameTreeValue(xRefTable *model.XRefTable, o types.Obje
 			))
 			return nil
 		}
+		// A file specification shared by several name tree entries is validated once per entry.
+		// Digest it once per object.
+		if objNr <= 0 || xRefTable.MarkDigested(digestKindEmbeddedFileStream, objNr) {
+			err = model.WithValidationErrorObject(errors.New("EmbeddedFiles name tree value: expected matching embedded file stream"), objNr)
+			xRefTable.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
+		}
+		return nil
 	}
 	return errors.New("EmbeddedFiles name tree value: expected matching embedded file stream")
 }

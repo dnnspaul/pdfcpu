@@ -527,3 +527,35 @@ func BenchmarkStructureTreeSelfCycles(b *testing.B) {
 		}
 	}
 }
+
+// plainFileSpec returns a file specification that names a file but embeds no file stream.
+func plainFileSpec() types.Dict {
+	return types.Dict{"Type": types.Name("Filespec"), "F": types.StringLiteral("img/pageA4.pdf")}
+}
+
+// TestEmbeddedFilesMissingStreamModes digests an EmbeddedFiles name tree value without an EF entry in relaxed mode only.
+func TestEmbeddedFilesMissingStreamModes(t *testing.T) {
+	const want = "EmbeddedFiles name tree value: expected matching embedded file stream"
+	for _, m := range validationModes {
+		t.Run(m.name, func(t *testing.T) {
+			ctx := validationModeTestContext(t, m.mode, map[int]types.Object{4: plainFileSpec()})
+			err := validateEmbeddedFilesNameTreeValue(ctx.XRefTable, *types.NewIndirectRef(4, 0), model.V14)
+			requireValidationModeOutcome(t, ctx, err, want, want, 4)
+		})
+	}
+}
+
+// TestEmbeddedFilesMissingStreamDigestedOnce digests a file specification shared by several
+// EmbeddedFiles entries once per object.
+func TestEmbeddedFilesMissingStreamDigestedOnce(t *testing.T) {
+	ctx := validationModeTestContext(t, model.ValidationRelaxed, map[int]types.Object{4: plainFileSpec(), 5: plainFileSpec()})
+	for _, objNr := range []int{4, 5, 4, 5} {
+		if err := validateEmbeddedFilesNameTreeValue(ctx.XRefTable, *types.NewIndirectRef(objNr, 0), model.V14); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notices := ctx.ValidationReport().Notices()
+	if len(notices) != 2 || notices[0].ObjectNumber != 4 || notices[1].ObjectNumber != 5 {
+		t.Fatalf("notices: got %+v, want one notice for obj#4 and one for obj#5", notices)
+	}
+}
