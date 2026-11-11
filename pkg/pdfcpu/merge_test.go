@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
 func TestMergeXRefTablesReturnsCancellation(t *testing.T) {
@@ -105,5 +106,44 @@ func TestEnsureOutlinesNilContextReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ensure outlines: missing context") {
 		t.Fatalf("expected missing context error, got %q", err.Error())
+	}
+}
+
+// TestRenameOrphanWidgetFieldIgnoresNonNameSubtype treats a dict whose Subtype is not a name as not a widget.
+// The scan covers every source dict, eg. a Mac file information dict with an integer Subtype.
+func TestRenameOrphanWidgetFieldIgnoresNonNameSubtype(t *testing.T) {
+	ctx := testMergeContext(t)
+	for _, subtype := range []types.Object{types.Integer(1413830740), types.StringLiteral("Widget")} {
+		d := types.Dict{"Subtype": subtype, "T": types.StringLiteral("f")}
+		if err := renameOrphanWidgetField(ctx, d, "0"); err != nil {
+			t.Fatalf("Subtype %v: %v", subtype, err)
+		}
+		if d["T"] != types.StringLiteral("f") {
+			t.Fatalf("Subtype %v: T renamed to %v", subtype, d["T"])
+		}
+	}
+
+	d := types.Dict{"Subtype": types.Name("Widget"), "T": types.StringLiteral("f")}
+	if err := renameOrphanWidgetField(ctx, d, "0"); err != nil {
+		t.Fatal(err)
+	}
+	if d["T"] != types.StringLiteral("0.f") {
+		t.Fatalf("widget T: got %v, want 0.f", d["T"])
+	}
+}
+
+// TestMergeXRefTablesSourceWithIntegerSubtype merges a source holding a dict with an integer Subtype.
+func TestMergeXRefTablesSourceWithIntegerSubtype(t *testing.T) {
+	src, dest := testMergeContext(t), testMergeContext(t)
+	// ReadFile leaves PageCount to validation. textAndAlignment.pdf has one page.
+	src.PageCount, dest.PageCount = 1, 1
+	if _, err := src.IndRefForNewObject(types.Dict{"Subtype": types.Integer(1413830740)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := MergeXRefTables(t.Context(), "source.pdf", src, dest, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if dest.PageCount != 2 {
+		t.Fatalf("PageCount: got %d, want 2", dest.PageCount)
 	}
 }

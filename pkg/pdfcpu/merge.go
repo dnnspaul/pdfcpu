@@ -797,11 +797,13 @@ func sourceFieldWidgetObjNrs(c context.Context, ctx *model.Context) (types.IntSe
 }
 
 func renameOrphanWidgetField(ctx *model.Context, d types.Dict, namespace string) error {
-	typ, _, err := ctx.DereferenceNameEntry(d, "Subtype")
+	// Every dict of the source is scanned, so Subtype may belong to any dict type,
+	// eg. the integer file type of a Mac file information dict. Only the name Widget matters.
+	o, err := ctx.Dereference(d["Subtype"])
 	if err != nil {
 		return fmt.Errorf("orphan widget field: Subtype: %w", err)
 	}
-	if typ == nil || typ.Value() != "Widget" {
+	if typ, ok := o.(types.Name); !ok || typ != "Widget" {
 		return nil
 	}
 	name, _, err := ctx.DereferenceStringEntry(d, "T")
