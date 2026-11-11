@@ -29,6 +29,10 @@ import (
 )
 
 func logWriteStats(ctx *model.Context) {
+	// Stats go to the stats log or, via NonReferencedObjs, to the stats file.
+	if !log.StatsEnabled() && ctx.StatsFileName == "" {
+		return
+	}
 
 	xRefTable := ctx.XRefTable
 
@@ -40,7 +44,7 @@ func logWriteStats(ctx *model.Context) {
 
 	var nonRefObjs []int
 
-	for i := 0; i < *xRefTable.Size; i++ {
+	for _, i := range xRefTable.SortedObjNrsBelowSize() {
 
 		entry, found := xRefTable.Find(i)
 		if !found || entry.Free || ctx.Write.HasWriteOffset(i) {

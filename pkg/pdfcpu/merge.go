@@ -1316,7 +1316,7 @@ func patchSourceXRefEntries(c context.Context, ctxSrc *model.Context, objNrs typ
 }
 
 func remapSourceXRefTable(ctxSrc *model.Context, lookup map[int]int) {
-	m := make(map[int]*model.XRefTableEntry, *ctxSrc.Size)
+	m := make(map[int]*model.XRefTableEntry, len(lookup)+1)
 	for k, v := range lookup {
 		m[v] = ctxSrc.Table[k]
 	}

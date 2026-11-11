@@ -623,7 +623,7 @@ func deleteRedundantObjects(c context.Context, ctx *model.Context) error {
 		log.Write.Printf("deleteRedundantObjects begin: Size=%d\n", *xRefTable.Size)
 	}
 
-	for i := 0; i < *xRefTable.Size; i++ {
+	for _, i := range xRefTable.SortedObjNrsBelowSize() {
 		if err := contextutil.Check(c); err != nil {
 			return err
 		}

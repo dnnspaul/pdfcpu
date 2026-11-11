@@ -1343,25 +1343,59 @@ func (xRefTable *XRefTable) Pages() (*types.IndirectRef, error) {
 	return &ir, nil
 }
 
+// maxListedMissingObjects bounds the object numbers listed by MissingObjects.
+const maxListedMissingObjects = 1000
+
+// SortedObjNrsBelowSize returns the object numbers in the table below Size in ascending order.
+// Loops over these instead of 0..Size run in time proportional to the table,
+// because a trailer Size may be as large as 2^31 for a file with a handful of objects.
+func (xRefTable *XRefTable) SortedObjNrsBelowSize() []int {
+	objNrs := make([]int, 0, len(xRefTable.Table))
+	for objNr := range xRefTable.Table {
+		if objNr >= 0 && objNr < *xRefTable.Size {
+			objNrs = append(objNrs, objNr)
+		}
+	}
+	sort.Ints(objNrs)
+	return objNrs
+}
+
 // MissingObjects returns the number of objects that were not written
 // plus the corresponding comma separated string representation.
+// The string lists at most maxListedMissingObjects object numbers and ends in ",..." if there are more.
 func (xRefTable *XRefTable) MissingObjects() (int, *string) {
 	var missing []string
+	count := 0
 
-	for i := 0; i < *xRefTable.Size; i++ {
-		if !xRefTable.Exists(i) {
+	addGap := func(from, to int) {
+		// from..to-1 are missing.
+		if to <= from {
+			return
+		}
+		count += to - from
+		for i := from; i < to && len(missing) < maxListedMissingObjects; i++ {
 			missing = append(missing, fmt.Sprintf("%d", i))
 		}
 	}
+
+	next := 0
+	for _, objNr := range xRefTable.SortedObjNrsBelowSize() {
+		addGap(next, objNr)
+		next = objNr + 1
+	}
+	addGap(next, *xRefTable.Size)
 
 	var s *string
 
 	if len(missing) > 0 {
 		joined := strings.Join(missing, ",")
+		if count > len(missing) {
+			joined += ",..."
+		}
 		s = &joined
 	}
 
-	return len(missing), s
+	return count, s
 }
 
 func (xRefTable *XRefTable) sortedKeys() []int {

@@ -330,7 +330,7 @@ type OptimizationContext struct {
 	FormResourceCache map[int]types.IntSet
 
 	DuplicateInfoObjects types.IntSet // Possible result of manual info dict modification.
-	NonReferencedObjs    []int        // Objects that are not referenced.
+	NonReferencedObjs    []int        // Objects not written; filled by write only if stats are logged or a stats file is configured.
 
 	Cache     map[int]bool // For visited objects during optimization.
 	NullObjNr *int         // objNr of a regular null object, to be used for fixing references to free objects.
