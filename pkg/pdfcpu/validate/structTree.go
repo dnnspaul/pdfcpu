@@ -171,6 +171,9 @@ func validateStructElementKArrayElement(xRefTable *model.XRefTable, o types.Obje
 		}
 
 		if dictType == nil || dictType.Value() == "StructElem" {
+			if deferStructElement(visit, xRefTable, o, ownerObjNr, depth+1) {
+				return nil
+			}
 			return validateStructElementDictDepth(xRefTable, o, ownerObjNr, useIDs, depth+1, visit)
 		}
 
@@ -264,6 +267,11 @@ func validateStructElementDictEntryKDepth(xRefTable *model.XRefTable, rawObject 
 
 	objNr, err := enterStructureTreeObject(visit, rawObject)
 	if err != nil {
+		if xRefTable.ValidationMode == model.ValidationRelaxed && errors.Is(err, model.ErrStructureTreeCycle) {
+			// Same as the array form: a relaxed cycle is one notice, whatever its length.
+			recordStructureTreeCycleNotice(xRefTable, objNr, model.WrapRecursionError(context, err))
+			return nil
+		}
 		return fmt.Errorf("%s: %w", context, err)
 	}
 	defer visit.Leave(objNr)
@@ -654,7 +662,15 @@ func validateStructElementDictPart2(xRefTable *model.XRefTable, d types.Dict, ow
 }
 
 func validateStructElementDictContext(c context.Context, xRefTable *model.XRefTable, d types.Dict, useIDs bool) error {
-	return validateStructElementDictDepth(xRefTable, d, 0, useIDs, 0, newStructureTraversal(c))
+	if state := structureTreeStateFrom(c); state != nil {
+		if err := walkStructureHierarchy(c, xRefTable, d, "structure element", 0, false, nil, state); err != nil {
+			return err
+		}
+	}
+	if err := validateStructElementDictDepth(xRefTable, d, 0, useIDs, 0, newStructureTraversal(c)); err != nil {
+		return err
+	}
+	return drainDeferredStructElements(c, xRefTable, useIDs)
 }
 
 func validateStructElementDictDepth(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, useIDs bool, depth int, visit *structureTraversal) (err error) {
@@ -815,8 +831,26 @@ func validateStructTreeRootDictEntryKDepth(xRefTable *model.XRefTable, rawObject
 	return nil
 }
 
+// validateStructTreeRootKContext validates a K value that is not the StructTreeRoot K entry,
+// that is a ParentTree value. Only the root K entry is covered by validateStructureHierarchy,
+// so the cycles-only walk runs here.
 func validateStructTreeRootKContext(c context.Context, xRefTable *model.XRefTable, o types.Object, useIDs bool) error {
-	return validateStructTreeRootDictEntryKDepth(xRefTable, o, useIDs, newStructureTraversal(c))
+	if state := structureTreeStateFrom(c); state != nil {
+		if err := walkStructureHierarchy(c, xRefTable, o, "structure tree root K", 1, true, nil, state); err != nil {
+			return err
+		}
+	}
+	return validateStructTreeRootKEntry(c, xRefTable, o, useIDs)
+}
+
+// validateStructTreeRootKEntry validates the StructTreeRoot K entry. validateStructureHierarchy
+// has already walked it for duplicates and cycles, so only the semantic pass and the
+// deferred elements remain.
+func validateStructTreeRootKEntry(c context.Context, xRefTable *model.XRefTable, o types.Object, useIDs bool) error {
+	if err := validateStructTreeRootDictEntryKDepth(xRefTable, o, useIDs, newStructureTraversal(c)); err != nil {
+		return err
+	}
+	return drainDeferredStructElements(c, xRefTable, useIDs)
 }
 
 func processStructTreeClassMapDict(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int) (err error) {
@@ -882,6 +916,13 @@ func validateStructTreeRootDictEntryParentTree(c context.Context, xRefTable *mod
 		if d == nil || d.Len() == 0 {
 			return nil
 		}
+		if _, ok := d.Find("Kids"); !ok {
+			if _, ok := d.Find("Nums"); !ok {
+				err := model.WithValidationErrorObject(errors.New("structure tree ParentTree: missing Kids or Nums"), objNr)
+				xRefTable.AddValidationNotice(model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeSkipped, err.Error(), err))
+				return nil
+			}
+		}
 	}
 
 	d, err := xRefTable.DereferenceDict(*ir)
@@ -910,6 +951,10 @@ func validateStructTreeRootDict(c context.Context, xRefTable *model.XRefTable, d
 	defer func() {
 		err = model.WithValidationErrorObject(err, ownerObjNr)
 	}()
+
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		c = withStructureTreeState(c)
+	}
 
 	dictName := "StructTreeRootDict"
 
@@ -941,7 +986,7 @@ func validateStructTreeRootDict(c context.Context, xRefTable *model.XRefTable, d
 
 	// Optional entry K: struct element dict or array of struct element dicts
 	if o, found := d.Find("K"); found {
-		err := validateStructTreeRootKContext(c, xRefTable, o, useIDs)
+		err := validateStructTreeRootKEntry(c, xRefTable, o, useIDs)
 		if err != nil {
 			return err
 		}

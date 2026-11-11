@@ -139,7 +139,7 @@ func TestReadAndValidateFailureClassification(t *testing.T) {
 		{name: "validation failure", input: invalidValidationTestPDF(), ctx: context.Background(), invalid: true, phase: model.NoticePhaseValidate},
 		{
 			name:       "struct tree failure",
-			input:      failureTestStructTreePDF(1, "<< /Limits [0 1] >>"),
+			input:      failureTestStructTreePDF(1, "<< /Nums 7 >>"),
 			ctx:        context.Background(),
 			invalid:    true,
 			phase:      model.NoticePhaseValidate,
@@ -214,7 +214,7 @@ func TestMergeRawEncryptedInputIsNotInvalidPDF(t *testing.T) {
 // TestReadAndValidateStructTreeFailureDetails verifies a struct tree failure names the catalog entry and object.
 func TestReadAndValidateStructTreeFailureDetails(t *testing.T) {
 	_, err := ReadAndValidate(context.Background(),
-		bytes.NewReader(failureTestStructTreePDF(1, "<< /Limits [0 1] >>")), model.NewDefaultConfiguration())
+		bytes.NewReader(failureTestStructTreePDF(1, "<< /Nums 7 >>")), model.NewDefaultConfiguration())
 	var invalidErr *InvalidPDFError
 	if !errors.As(err, &invalidErr) {
 		t.Fatalf("got %v, want *InvalidPDFError", err)
@@ -383,7 +383,7 @@ func (r *failingReader) Seek(offset int64, whence int) (int64, error) {
 
 // TestReadAndValidateReaderFailureIsNotInvalidPDF verifies an I/O error of the input reader is not reported as invalid input.
 func TestReadAndValidateReaderFailureIsNotInvalidPDF(t *testing.T) {
-	data := failureTestStructTreePDF(1, "<< /Limits [0 1] >>")
+	data := failureTestStructTreePDF(1, "<< /Nums 7 >>")
 	readErr := errors.New("connection reset by peer")
 	_, err := ReadAndValidate(context.Background(),
 		&failingReader{data: data, failAt: int64(len(data) / 2), err: readErr}, model.NewDefaultConfiguration())

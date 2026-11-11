@@ -199,6 +199,10 @@ type XRefTable struct {
 	URIs             map[int]map[string]string // URIs for link checking
 	validationReport *ValidationReport
 
+	// StructTreeRemoved reports that validation removed an invalid StructTreeRoot
+	// from the catalog, see Configuration.RemoveInvalidStructTree.
+	StructTreeRemoved bool
+
 	Optimized      bool
 	Watermarked    bool
 	Form           types.Dict

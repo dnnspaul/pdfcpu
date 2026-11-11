@@ -1860,10 +1860,11 @@ func rootEntryValidators(c context.Context) []rootEntryValidator {
 
 func validateRootEntries(
 	c context.Context,
-	xRefTable *model.XRefTable,
+	ctx *model.Context,
 	rootDict types.Dict,
 	rootObjNr int,
 ) error {
+	xRefTable := ctx.XRefTable
 	for _, validator := range rootEntryValidators(c) {
 		if err := contextutil.Check(c); err != nil {
 			return err
@@ -1873,9 +1874,19 @@ func validateRootEntries(
 		}
 		if err := validator.validate(xRefTable, rootDict, validator.required, validator.sinceVersion); err != nil {
 			err = model.WithValidationErrorEntry(err, validator.name)
-			return model.WithValidationErrorObject(
+			err = model.WithValidationErrorObject(
 				err, validationEntryObjectNumber(rootObjNr, rootDict, validator.name),
 			)
+			if validator.name == "StructTreeRoot" {
+				removed, ctxErr := removeInvalidStructTree(c, ctx, rootDict, err)
+				if ctxErr != nil {
+					return ctxErr
+				}
+				if removed {
+					continue
+				}
+			}
+			return err
 		}
 	}
 	return nil
@@ -1958,7 +1969,7 @@ func validateRootObject(c context.Context, ctx *model.Context, rootDict types.Di
 		return err
 	}
 
-	if err = validateRootEntries(c, xRefTable, rootDict, rootObjNr); err != nil {
+	if err = validateRootEntries(c, ctx, rootDict, rootObjNr); err != nil {
 		return err
 	}
 
@@ -1982,4 +1993,31 @@ func validateRootObject(c context.Context, ctx *model.Context, rootDict types.Di
 	}
 
 	return nil
+}
+
+// removeInvalidStructTree applies Configuration.RemoveInvalidStructTree to err,
+// a failure of the catalog entry StructTreeRoot. It reports whether the
+// structure tree was removed from the catalog. If the context is done, it
+// returns the context error instead of the structure tree failure, so a
+// deadline is never reported as invalid input.
+func removeInvalidStructTree(c context.Context, ctx *model.Context, rootDict types.Dict, err error) (bool, error) {
+	xRefTable := ctx.XRefTable
+	if xRefTable.ValidationMode != model.ValidationRelaxed || xRefTable.Conf == nil || !xRefTable.Conf.RemoveInvalidStructTree {
+		return false, nil
+	}
+	// Same exclusions as ErrInvalidStructTree: never swallow cancellation,
+	// resource limits or reader failures.
+	if ctx.Read.ReaderErr() != nil ||
+		!errors.Is(model.WithInvalidPDF(err, model.NoticePhaseValidate), model.ErrInvalidStructTree) {
+		return false, nil
+	}
+	if ctxErr := contextutil.Check(c); ctxErr != nil {
+		return false, ctxErr
+	}
+	rootDict.Delete("StructTreeRoot")
+	xRefTable.StructTreeRemoved = true
+	notice := model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeRepaired, err.Error(), err)
+	notice.Path = "StructTreeRoot"
+	xRefTable.AddValidationNotice(notice)
+	return true, nil
 }

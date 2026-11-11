@@ -431,6 +431,13 @@ type Configuration struct {
 
 	// Remove existing signatures.
 	RemoveSignatures bool
+
+	// RemoveInvalidStructTree removes an invalid structure tree from the
+	// in-memory catalog in relaxed validation mode instead of failing.
+	// The failure is reported as one validation notice and
+	// XRefTable.StructTreeRemoved is set. Context errors, reader errors and
+	// resource limit errors are never removed. It has no effect in strict mode.
+	RemoveInvalidStructTree bool
 }
 
 // Clone returns an independent copy of c and preserves nil receiver semantics.
