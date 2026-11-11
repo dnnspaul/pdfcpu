@@ -363,7 +363,26 @@ func (ann Annotation) HashString() uint32 {
 	return ann.Hash
 }
 
+// ErrMissingAnnotationAppearance signals a PDF 2.0 annotation without its required appearance dictionary.
+var ErrMissingAnnotationAppearance = errors.New("missing annotation appearance dictionary")
+
+// annotationAppearanceError reports a PDF 2.0 annotation without its required appearance dictionary.
+type annotationAppearanceError struct {
+	subtype types.Name
+}
+
+// Error implements error.
+func (e *annotationAppearanceError) Error() string {
+	return fmt.Sprintf("PDF 2.0 %s annotation requires an appearance dictionary (AP)", e.subtype)
+}
+
+// Is classifies this error as ErrMissingAnnotationAppearance.
+func (e *annotationAppearanceError) Is(target error) bool {
+	return target == ErrMissingAnnotationAppearance
+}
+
 // CheckAnnotationAppearance checks whether a PDF 2.0 annotation has its required appearance dictionary.
+// A missing one is reported by an error matching ErrMissingAnnotationAppearance.
 // It does not validate the appearance streams.
 func (xRefTable *XRefTable) CheckAnnotationAppearance(d types.Dict) error {
 	// see 12.5.2, Table 166
@@ -396,7 +415,7 @@ func (xRefTable *XRefTable) CheckAnnotationAppearance(d types.Dict) error {
 	if r.Width() == 0 && r.Height() == 0 {
 		return nil
 	}
-	return fmt.Errorf("PDF 2.0 %s annotation requires an appearance dictionary (AP)", subtype)
+	return &annotationAppearanceError{subtype: subtype}
 }
 
 // RenderDict renders ann as dict.

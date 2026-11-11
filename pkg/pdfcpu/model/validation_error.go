@@ -52,3 +52,39 @@ func WithValidationErrorObject(err error, objNr int) error {
 
 	return &ValidationError{objNr: objNr, err: err}
 }
+
+// validationEntryError attributes a validation failure to a named dictionary entry.
+type validationEntryError struct {
+	entry string
+	err   error
+}
+
+// Error implements error.
+func (e *validationEntryError) Error() string {
+	return e.entry + ": " + e.err.Error()
+}
+
+// Unwrap returns the underlying validation error.
+func (e *validationEntryError) Unwrap() error {
+	return e.err
+}
+
+// WithValidationErrorEntry prefixes err with entry like fmt.Errorf("%s: %w", entry, err)
+// and records entry for InvalidPDFError.Path.
+func WithValidationErrorEntry(err error, entry string) error {
+	if err == nil {
+		return nil
+	}
+	return &validationEntryError{entry: entry, err: err}
+}
+
+// validationErrorPath returns the entries recorded by WithValidationErrorEntry on err's chain, outermost first.
+func validationErrorPath(err error) []string {
+	var path []string
+	for ; err != nil; err = errors.Unwrap(err) {
+		if e, ok := err.(*validationEntryError); ok {
+			path = append(path, e.entry)
+		}
+	}
+	return path
+}

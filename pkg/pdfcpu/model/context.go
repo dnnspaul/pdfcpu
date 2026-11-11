@@ -203,7 +203,7 @@ func (ctx *Context) ConvertToUnit(d types.Dim) types.Dim {
 type ReadContext struct {
 	FileName            string        // Input PDF-File.
 	FileSize            int64         // Input file size.
-	RS                  io.ReadSeeker // Input read seeker.
+	RS                  io.ReadSeeker // Input read seeker. Wraps the reader passed to NewContext; replacing it bypasses ReaderErr.
 	EolCount            int           // 1 or 2 characters used for eol.
 	RepairOffset        int64
 	BinaryTotalSize     int64        // total stream data
@@ -217,17 +217,20 @@ type ReadContext struct {
 	ObjectStreams       types.IntSet // All object numbers of any object streams found which need to be decoded.
 	UsingXRefStreams    bool         // File is using xref streams.
 	XRefStreams         types.IntSet // All object numbers of any xref streams found.
+	rec                 *readErrorRecorder
 }
 
 func newReadContext(rs io.ReadSeeker) (*ReadContext, error) {
 
+	rec := &readErrorRecorder{rs: rs}
 	rdCtx := &ReadContext{
-		RS:            rs,
+		RS:            rec,
 		ObjectStreams: types.IntSet{},
 		XRefStreams:   types.IntSet{},
+		rec:           rec,
 	}
 
-	fileSize, err := rs.Seek(0, io.SeekEnd)
+	fileSize, err := rec.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, err
 	}

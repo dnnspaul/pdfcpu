@@ -25,12 +25,27 @@ import (
 // VersionRequirementError reports an element requiring a newer PDF version.
 type VersionRequirementError = model.VersionRequirementError
 
+// InvalidPDFError marks a read or validation failure caused by the PDF input.
+type InvalidPDFError = model.InvalidPDFError
+
+// ResourceLimitError reports processing stopped at a resource limit.
+type ResourceLimitError = model.ResourceLimitError
+
 var (
 	// ErrInvalidPageNumber signals an invalid page number.
 	ErrInvalidPageNumber = errors.New("invalid page number")
 
+	// ErrInvalidPDF signals that a PDF could not be read or failed validation.
+	ErrInvalidPDF = model.ErrInvalidPDF
+
+	// ErrInvalidStructTree signals an ErrInvalidPDF failure below the document catalog's StructTreeRoot entry.
+	ErrInvalidStructTree = model.ErrInvalidStructTree
+
 	// ErrMissingAnnotation signals a missing required annotation.
 	ErrMissingAnnotation = errors.New("missing annotation")
+
+	// ErrMissingAnnotationAppearance signals a PDF 2.0 annotation without its required appearance dictionary.
+	ErrMissingAnnotationAppearance = model.ErrMissingAnnotationAppearance
 
 	// ErrMissingContext signals a missing required Go context.
 	ErrMissingContext = model.ErrMissingContext
@@ -73,6 +88,9 @@ var (
 
 	// ErrNoSignatures signals that a PDF has no signatures to process.
 	ErrNoSignatures = errors.New("no signatures present")
+
+	// ErrResourceLimit signals that processing stopped at a configured resource limit.
+	ErrResourceLimit = model.ErrResourceLimit
 
 	// ErrUnsupportedResource signals that extraction skipped a resource because
 	// pdfcpu does not support its type or filter. Use errors.Is to identify it.

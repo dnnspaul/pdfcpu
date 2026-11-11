@@ -48,6 +48,7 @@ func validateXRefTableContext(ctx *model.Context) error {
 }
 
 // XRefTable validates a PDF cross reference table and supports cancellation.
+// Validation failures caused by the PDF match model.ErrInvalidPDF.
 func XRefTable(c context.Context, ctx *model.Context) error {
 	if err := contextutil.Check(c); err != nil {
 		return err
@@ -55,7 +56,11 @@ func XRefTable(c context.Context, ctx *model.Context) error {
 	if err := validateXRefTableContext(ctx); err != nil {
 		return err
 	}
-	return validateXRefTable(c, ctx)
+	err := validateXRefTable(c, ctx)
+	if err == nil || c.Err() != nil || ctx.Read.ReaderErr() != nil || errors.Is(err, errLinkVerification) {
+		return err
+	}
+	return model.WithInvalidPDF(err, model.NoticePhaseValidate)
 }
 
 func validateDocumentInfoBeforeRoot(c context.Context, xRefTable *model.XRefTable) (bool, error) {
@@ -1864,7 +1869,7 @@ func validateRootEntries(
 			continue
 		}
 		if err := validator.validate(xRefTable, rootDict, validator.required, validator.sinceVersion); err != nil {
-			err = fmt.Errorf("%s: %w", validator.name, err)
+			err = model.WithValidationErrorEntry(err, validator.name)
 			return model.WithValidationErrorObject(
 				err, validationEntryObjectNumber(rootObjNr, rootDict, validator.name),
 			)

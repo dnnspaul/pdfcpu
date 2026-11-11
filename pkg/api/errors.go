@@ -24,6 +24,12 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
+// InvalidPDFError marks a read or validation failure caused by the PDF input.
+type InvalidPDFError = pdfcpu.InvalidPDFError
+
+// ResourceLimitError reports processing stopped at a resource limit.
+type ResourceLimitError = pdfcpu.ResourceLimitError
+
 // VersionRequirementError reports an element requiring a newer PDF version.
 type VersionRequirementError = pdfcpu.VersionRequirementError
 
@@ -106,6 +112,9 @@ var (
 	// ErrInvalidPageMode signals an unsupported page mode.
 	ErrInvalidPageMode = errors.New("invalid page mode")
 
+	// ErrInvalidPDF signals that a PDF could not be read or failed validation.
+	ErrInvalidPDF = pdfcpu.ErrInvalidPDF
+
 	// ErrInvalidResizeConfiguration signals an invalid resize configuration.
 	ErrInvalidResizeConfiguration = errors.New("invalid resize configuration")
 
@@ -118,6 +127,9 @@ var (
 	// ErrInvalidSplitSpan signals an invalid split span.
 	ErrInvalidSplitSpan = errors.New("invalid split span")
 
+	// ErrInvalidStructTree signals an ErrInvalidPDF failure below the document catalog's StructTreeRoot entry.
+	ErrInvalidStructTree = pdfcpu.ErrInvalidStructTree
+
 	// ErrInvalidUnicodePlane signals an invalid Unicode plane.
 	ErrInvalidUnicodePlane = errors.New("invalid Unicode plane")
 
@@ -126,6 +138,9 @@ var (
 
 	// ErrMissingAnnotation signals a missing required annotation.
 	ErrMissingAnnotation = pdfcpu.ErrMissingAnnotation
+
+	// ErrMissingAnnotationAppearance signals a PDF 2.0 annotation without its required appearance dictionary.
+	ErrMissingAnnotationAppearance = pdfcpu.ErrMissingAnnotationAppearance
 
 	// ErrMissingBookletConfiguration signals a missing booklet configuration.
 	ErrMissingBookletConfiguration = errors.New("missing booklet configuration")
@@ -268,6 +283,9 @@ var (
 	// Deprecated: use ErrExistingBookmarks.
 	ErrOutlines = ErrExistingBookmarks
 
+	// ErrResourceLimit signals that processing stopped at a configured resource limit.
+	ErrResourceLimit = pdfcpu.ErrResourceLimit
+
 	// ErrUnknownFont aliases the lower-layer unknown-font sentinel.
 	ErrUnknownFont = font.ErrUnknownFont
 
@@ -291,4 +309,7 @@ var (
 
 	// ErrVersionTooLow signals that an element requires a newer declared PDF version.
 	ErrVersionTooLow = pdfcpu.ErrVersionTooLow
+
+	// ErrWrongPassword signals a missing or wrong password for opening an encrypted PDF.
+	ErrWrongPassword = pdfcpu.ErrWrongPassword
 )

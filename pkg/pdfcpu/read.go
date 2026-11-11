@@ -161,6 +161,7 @@ func ReadFile(c context.Context, inFile string, conf *model.Configuration) (*mod
 // Read takes a readSeeker and generates a PDF model context,
 // an in-memory representation containing a cross reference table.
 // If the passed Go context is cancelled, reading will be interrupted.
+// Failures caused by the PDF input match model.ErrInvalidPDF.
 func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*model.Context, error) {
 	if err := contextutil.Check(c); err != nil {
 		return nil, err
@@ -180,7 +181,7 @@ func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*mode
 	}
 
 	if ctx.Read.FileSize == 0 {
-		return nil, ErrEmptyInput
+		return nil, invalidPDFError(c, ctx, ErrEmptyInput)
 	}
 	// Share one parsing budget across xref construction and object loading.
 	c = context.WithValue(c, objectReadBudgetKey{}, &objectReadBudgetState{limit: objectReadBudgetLimit(ctx)})
@@ -197,13 +198,13 @@ func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*mode
 
 	// Populate xRefTable.
 	if err = readXRefTable(c, ctx); err != nil {
-		return nil, fmt.Errorf("xref table: %w", err)
+		return nil, invalidPDFError(c, ctx, fmt.Errorf("xref table: %w", err))
 	}
 
 	// Make all objects explicitly available (load into memory) in corresponding xRefTable entries.
 	// Also decode any involved object streams.
 	if err = dereferenceXRefTable(c, ctx); err != nil {
-		return nil, err
+		return nil, invalidPDFError(c, ctx, err)
 	}
 
 	// Some PDFWriters write an incorrect Size into trailer.
@@ -217,6 +218,21 @@ func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*mode
 	}
 
 	return ctx, nil
+}
+
+// invalidPDFError marks err as a model.ErrInvalidPDF read failure unless it was caused by
+// cancellation, credentials, the encryption policy of the operation or a failure of the reader.
+// Once the reader has failed, every error of the read is reported as a reader failure.
+func invalidPDFError(c context.Context, ctx *model.Context, err error) error {
+	if c.Err() != nil || ctx.Read.ReaderErr() != nil {
+		return err
+	}
+	for _, target := range []error{ErrWrongPassword, ErrOwnerPasswordRequired, ErrPermissionDenied, ErrEncrypted, ErrNotEncrypted} {
+		if errors.Is(err, target) {
+			return err
+		}
+	}
+	return model.WithInvalidPDF(err, model.NoticePhaseRead)
 }
 
 // fillBuffer reads from r until buf is full or read returns an error.
