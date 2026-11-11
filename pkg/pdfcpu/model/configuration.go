@@ -525,6 +525,19 @@ type ResourceLimits struct {
 
 	// MaxRecursionDepth limits recursive parsing and object graph traversal.
 	MaxRecursionDepth int
+
+	// MaxRetainedNotices limits the validation notices a PDF context stores.
+	// Further notices are counted as dropped. Zero or negative means unlimited.
+	MaxRetainedNotices int
+
+	// MaxNotices limits the validation notices a PDF context accepts, including dropped ones.
+	// Reading or validating stops with a ResourceLimitError of kind LimitNotices
+	// once it is exceeded. Zero or negative means unlimited.
+	// The count spans every read and validation run on the same context, so a
+	// caller that validates the context twice, as FillForm does, counts the
+	// notices of both runs. Notices added outside pdfcpu.Read and
+	// validate.XRefTable are counted but cannot stop a run.
+	MaxNotices int
 }
 
 // DecodeLimit returns the configured decoded-byte limit.

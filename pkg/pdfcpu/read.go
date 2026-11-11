@@ -162,7 +162,7 @@ func ReadFile(c context.Context, inFile string, conf *model.Configuration) (*mod
 // an in-memory representation containing a cross reference table.
 // If the passed Go context is cancelled, reading will be interrupted.
 // Failures caused by the PDF input match model.ErrInvalidPDF.
-func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*model.Context, error) {
+func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (res *model.Context, err error) {
 	if err := contextutil.Check(c); err != nil {
 		return nil, err
 	}
@@ -180,8 +180,23 @@ func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*mode
 		return nil, err
 	}
 
+	rc, endNoticeLimit := ctx.EnforceNoticeLimit(c)
+	// Deferred so that the derived context is released even if readContext panics.
+	defer func() {
+		if err = endNoticeLimit(err); err != nil {
+			res = nil
+		}
+	}()
+	if err = readContext(rc, ctx); err != nil {
+		return nil, err
+	}
+	return ctx, nil
+}
+
+// readContext populates ctx's cross-reference table from ctx's input.
+func readContext(c context.Context, ctx *model.Context) error {
 	if ctx.Read.FileSize == 0 {
-		return nil, invalidPDFError(c, ctx, ErrEmptyInput)
+		return invalidPDFError(c, ctx, ErrEmptyInput)
 	}
 	// Share one parsing budget across xref construction and object loading.
 	c = context.WithValue(c, objectReadBudgetKey{}, &objectReadBudgetState{limit: objectReadBudgetLimit(ctx)})
@@ -197,14 +212,14 @@ func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*mode
 	}
 
 	// Populate xRefTable.
-	if err = readXRefTable(c, ctx); err != nil {
-		return nil, invalidPDFError(c, ctx, fmt.Errorf("xref table: %w", err))
+	if err := readXRefTable(c, ctx); err != nil {
+		return invalidPDFError(c, ctx, fmt.Errorf("xref table: %w", err))
 	}
 
 	// Make all objects explicitly available (load into memory) in corresponding xRefTable entries.
 	// Also decode any involved object streams.
-	if err = dereferenceXRefTable(c, ctx); err != nil {
-		return nil, invalidPDFError(c, ctx, err)
+	if err := dereferenceXRefTable(c, ctx); err != nil {
+		return invalidPDFError(c, ctx, err)
 	}
 
 	// Some PDFWriters write an incorrect Size into trailer.
@@ -217,7 +232,7 @@ func Read(c context.Context, rs io.ReadSeeker, conf *model.Configuration) (*mode
 		log.Read.Println("Read: end")
 	}
 
-	return ctx, nil
+	return nil
 }
 
 // invalidPDFError marks err as a model.ErrInvalidPDF read failure unless it was caused by

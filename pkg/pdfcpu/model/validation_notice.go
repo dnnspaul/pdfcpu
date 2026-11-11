@@ -16,7 +16,11 @@ limitations under the License.
 
 package model
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"iter"
+)
 
 // NoticeSeverity identifies the severity of an accepted validation divergence.
 type NoticeSeverity string
@@ -90,11 +94,21 @@ func validationNoticeObjectNumber(err error) int {
 }
 
 // ValidationReport contains the accepted validation divergences for one PDF context.
+// A report returned by Context.ValidationReport is a snapshot: it does not change when
+// the PDF context records further notices and may be read by several goroutines at once.
 type ValidationReport struct {
 	notices []ValidationNotice
 
+	// dropped counts the notices not stored because of ResourceLimits.MaxRetainedNotices.
+	dropped int
+
 	// digested holds the (kind, object) pairs already recorded by MarkDigested.
 	digested map[digestKey]struct{}
+
+	// abort, if set, stops the running read or validation once more than maxNotices
+	// notices have been accepted. See Context.EnforceNoticeLimit.
+	abort      context.CancelCauseFunc
+	maxNotices int
 }
 
 // digestKey identifies one kind of digested divergence at one object.
@@ -113,12 +127,75 @@ func (r ValidationReport) Notices() []ValidationNotice {
 	return append([]ValidationNotice(nil), r.notices...)
 }
 
+// Len returns the number of stored validation notices.
+func (r ValidationReport) Len() int {
+	return len(r.notices)
+}
+
+// Dropped returns the number of validation notices that were accepted but not stored
+// because ResourceLimits.MaxRetainedNotices was reached.
+// Len() + Dropped() is the number of accepted validation notices.
+func (r ValidationReport) Dropped() int {
+	return r.dropped
+}
+
+// First returns the first validation notice in collection order.
+// It reports false if no notice is stored.
+func (r ValidationReport) First() (ValidationNotice, bool) {
+	if len(r.notices) == 0 {
+		return ValidationNotice{}, false
+	}
+	return r.notices[0], true
+}
+
+// All returns an iterator over the stored validation notices in collection order.
+// It does not copy the notices.
+func (r ValidationReport) All() iter.Seq[ValidationNotice] {
+	return func(yield func(ValidationNotice) bool) {
+		for _, notice := range r.notices {
+			if !yield(notice) {
+				return
+			}
+		}
+	}
+}
+
+// add stores notice unless retain stored notices exist already, counts it
+// and stops the running read or validation once the notice limit is exceeded.
+func (r *ValidationReport) add(notice ValidationNotice, retain int) {
+	if retain > 0 && len(r.notices) >= retain {
+		r.dropped++
+	} else {
+		r.notices = append(r.notices, notice)
+	}
+	r.checkNoticeLimit()
+}
+
+// checkNoticeLimit stops the running read or validation if more than maxNotices notices were accepted.
+func (r *ValidationReport) checkNoticeLimit() {
+	if r.abort == nil {
+		return
+	}
+	if total := len(r.notices) + r.dropped; total > r.maxNotices {
+		r.abort(&ResourceLimitError{Kind: LimitNotices, Limit: int64(r.maxNotices), Value: int64(total)})
+		r.abort = nil
+	}
+}
+
+// retainedNoticeLimit returns conf's MaxRetainedNotices or 0 for a nil conf.
+func retainedNoticeLimit(conf *Configuration) int {
+	if conf == nil {
+		return 0
+	}
+	return conf.Limits.MaxRetainedNotices
+}
+
 // AddValidationNotice adds notice to this PDF context's validation report.
 func (ctx *Context) AddValidationNotice(notice ValidationNotice) {
 	if ctx == nil {
 		return
 	}
-	ctx.validationReport.notices = append(ctx.validationReport.notices, notice)
+	ctx.validationReport.add(notice, retainedNoticeLimit(ctx.Configuration))
 }
 
 // AddValidationNotice adds notice to the report owned by this cross-reference table's PDF context.
@@ -126,7 +203,7 @@ func (xRefTable *XRefTable) AddValidationNotice(notice ValidationNotice) {
 	if xRefTable == nil || xRefTable.validationReport == nil {
 		return
 	}
-	xRefTable.validationReport.notices = append(xRefTable.validationReport.notices, notice)
+	xRefTable.validationReport.add(notice, retainedNoticeLimit(xRefTable.Conf))
 }
 
 // MarkDigested records that the divergence of kind at objNr is being digested.
@@ -150,9 +227,57 @@ func (xRefTable *XRefTable) MarkDigested(kind string, objNr int) bool {
 }
 
 // ValidationReport returns a snapshot of this PDF context's validation report.
+// The snapshot shares the stored notices with ctx without copying them.
 func (ctx *Context) ValidationReport() ValidationReport {
 	if ctx == nil {
 		return ValidationReport{}
 	}
-	return ValidationReport{notices: ctx.validationReport.Notices()}
+	r := &ctx.validationReport
+	n := len(r.notices)
+	return ValidationReport{notices: r.notices[:n:n], dropped: r.dropped}
+}
+
+// EnforceNoticeLimit applies ResourceLimits.MaxNotices of ctx's configuration to a read
+// or validation of ctx that runs with c.
+// It returns the context to run the work with, which is cancelled once more than
+// MaxNotices validation notices have been accepted, and a function end that must be
+// called with the work's result when the work has returned.
+// end returns a *ResourceLimitError of kind LimitNotices if the limit was exceeded
+// and c is not done; otherwise it returns its argument.
+// Without a positive MaxNotices, EnforceNoticeLimit returns c and an end that returns its argument.
+//
+// Usage contract:
+//   - end must be called exactly once, preferably with defer, so that it also runs
+//     when the work panics.
+//   - Nested calls must be ended in reverse order. Ending out of order restores the wrong state.
+//   - Like the context itself, it is not safe for concurrent use.
+//
+// The notice limit is read from ctx.Configuration, while the storage cap of
+// AddValidationNotice comes from the Conf of the cross-reference table. Both are the
+// same object, because XRefTable.Conf is set from the PDF context's configuration.
+func (ctx *Context) EnforceNoticeLimit(c context.Context) (context.Context, func(error) error) {
+	if ctx == nil || ctx.Configuration == nil || ctx.Configuration.Limits.MaxNotices <= 0 {
+		return c, func(err error) error { return err }
+	}
+	r := &ctx.validationReport
+	prevAbort, prevMax := r.abort, r.maxNotices
+	limited, cancel := context.WithCancelCause(c)
+	r.abort, r.maxNotices = cancel, ctx.Configuration.Limits.MaxNotices
+	r.checkNoticeLimit()
+	return limited, func(err error) error {
+		// Read the state before the re-check below, which may cancel c.
+		stopped := limited.Err() != nil
+		cause := context.Cause(limited)
+		callerDone := c.Err() != nil
+		cancel(nil)
+		r.abort, r.maxNotices = prevAbort, prevMax
+		// An inner call may have tripped the limit and had its error swallowed.
+		// Re-check so that the outer call is cancelled as well.
+		r.checkNoticeLimit()
+		var limitErr *ResourceLimitError
+		if stopped && !callerDone && errors.As(cause, &limitErr) {
+			return limitErr
+		}
+		return err
+	}
 }
