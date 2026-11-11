@@ -907,7 +907,11 @@ func writeDeepObject(c context.Context, ctx *model.Context, objIn types.Object) 
 			return nil, false, err
 		}
 		if d, ok := o.(types.Dict); ok {
-			annotation, err := checkWrittenAnnotation(ctx, d)
+			objNr := 0
+			if ir, ok := objIn.(types.IndirectRef); ok {
+				objNr = ir.ObjectNumber.Value()
+			}
+			annotation, err := checkWrittenAnnotation(ctx, d, objNr)
 			if err != nil {
 				return nil, false, err
 			}

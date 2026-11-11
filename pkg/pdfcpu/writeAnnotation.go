@@ -25,6 +25,10 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+// annotationAppearanceWriteKind is the MarkDigested kind of the notice for an
+// annotation without /AP that is written in relaxed validation mode.
+const annotationAppearanceWriteKind = "annotation-appearance-write"
+
 type annotationWriteCheck struct {
 	ctx  *model.Context
 	seen map[types.IndirectRef]bool
@@ -37,11 +41,13 @@ func (v *annotationWriteCheck) check(c context.Context, o types.Object, kind str
 	if err := v.ctx.CheckRecursionDepth("check annotation appearances for writing", depth); err != nil {
 		return err
 	}
+	objNr := 0
 	if ir, ok := o.(types.IndirectRef); ok {
 		if v.seen[ir] {
 			return nil
 		}
 		v.seen[ir] = true
+		objNr = ir.ObjectNumber.Value()
 	}
 	obj, err := v.ctx.Dereference(o)
 	if err != nil {
@@ -55,7 +61,7 @@ func (v *annotationWriteCheck) check(c context.Context, o types.Object, kind str
 			}
 		}
 	case types.Dict:
-		if err := v.checkDict(c, obj, kind, depth); err != nil {
+		if err := v.checkDict(c, obj, kind, depth, objNr); err != nil {
 			if ir, ok := o.(types.IndirectRef); ok {
 				return fmt.Errorf("%s object %d: %w", kind, ir.ObjectNumber.Value(), err)
 			}
@@ -76,7 +82,7 @@ func (v *annotationWriteCheck) checkPage(c context.Context, d types.Dict, depth 
 	return v.check(c, d["Annots"], "Annots", depth+1)
 }
 
-func (v *annotationWriteCheck) checkDict(c context.Context, d types.Dict, kind string, depth int) error {
+func (v *annotationWriteCheck) checkDict(c context.Context, d types.Dict, kind string, depth, objNr int) error {
 	if kind == "Pages" {
 		return v.checkPage(c, d, depth)
 	}
@@ -85,7 +91,7 @@ func (v *annotationWriteCheck) checkDict(c context.Context, d types.Dict, kind s
 		return err
 	}
 	if kind == "Annots" || subtype == "Widget" {
-		if err := v.ctx.CheckAnnotationAppearance(d); err != nil {
+		if err := checkWrittenAnnotationAppearance(v.ctx, d, objNr); err != nil {
 			return err
 		}
 	}
@@ -123,9 +129,28 @@ func checkAnnotationAppearancesForWriting(c context.Context, ctx *model.Context)
 	return v.check(c, form["Fields"], "Fields", 0)
 }
 
-func checkWrittenAnnotation(ctx *model.Context, d types.Dict) (bool, error) {
+// checkWrittenAnnotationAppearance checks d, the annotation object objNr, like
+// CheckAnnotationAppearance. In relaxed validation mode a failure becomes a
+// validation notice and the annotation is written as it is, as
+// validateAnnotationDictGeneral does on read. An annotation is reached through
+// several paths (/Annots, /Fields, /Popup, /IRT), so it gets one notice per
+// object. objNr is 0 for a direct dictionary, which has no such paths.
+func checkWrittenAnnotationAppearance(ctx *model.Context, d types.Dict, objNr int) error {
+	err := ctx.CheckAnnotationAppearance(d)
+	if err == nil || ctx.XRefTable.ValidationMode != model.ValidationRelaxed {
+		return err
+	}
+	if objNr > 0 && !ctx.XRefTable.MarkDigested(annotationAppearanceWriteKind, objNr) {
+		return nil
+	}
+	ctx.AddValidationNotice(model.NewValidationNotice(
+		model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
+	return nil
+}
+
+func checkWrittenAnnotation(ctx *model.Context, d types.Dict, objNr int) (bool, error) {
 	if ctx.WritingAnnotation {
-		return true, ctx.CheckAnnotationAppearance(d)
+		return true, checkWrittenAnnotationAppearance(ctx, d, objNr)
 	}
 	// Type is optional on annotations; Widgets can also be reached through the field tree.
 	typ, err := ctx.Dereference(d["Type"])
@@ -137,7 +162,7 @@ func checkWrittenAnnotation(ctx *model.Context, d types.Dict) (bool, error) {
 		return false, err
 	}
 	if typ == types.Name("Annot") || subtype == types.Name("Widget") {
-		return true, ctx.CheckAnnotationAppearance(d)
+		return true, checkWrittenAnnotationAppearance(ctx, d, objNr)
 	}
 	return false, nil
 }

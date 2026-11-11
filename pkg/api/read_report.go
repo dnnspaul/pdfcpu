@@ -23,7 +23,8 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 )
 
-// ReadReport describes how ReadAndValidateWithReport accepted a PDF.
+// ReadReport describes how a PDF was read and validated: by
+// ReadAndValidateWithReport, or as one input of MergeRawWithReport.
 type ReadReport struct {
 	// Encrypted reports that the input is encrypted. It was opened with the
 	// configured passwords, by default the empty user password.
@@ -33,7 +34,9 @@ type ReadReport struct {
 	// the in-memory catalog, see model.Configuration.RemoveInvalidStructTree.
 	StructTreeRemoved bool
 
-	// Notices is the validation report of the returned context.
+	// Notices is the validation report of the input as it was read and
+	// validated. ReadAndValidateWithReport returns it with the context it
+	// returns; MergeRawWithReport returns it per input, as no context is returned.
 	Notices model.ValidationReport
 }
 

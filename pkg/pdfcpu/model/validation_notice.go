@@ -132,6 +132,14 @@ func (r ValidationReport) Len() int {
 	return len(r.notices)
 }
 
+// Since returns the notices that r holds beyond those of before, an earlier
+// snapshot of the same PDF context taken with Context.ValidationReport. The
+// dropped notices recorded since before are counted as well.
+func (r ValidationReport) Since(before ValidationReport) ValidationReport {
+	n := min(len(before.notices), len(r.notices))
+	return ValidationReport{notices: r.notices[n:len(r.notices):len(r.notices)], dropped: r.dropped - before.dropped}
+}
+
 // Dropped returns the number of validation notices that were accepted but not stored
 // because ResourceLimits.MaxRetainedNotices was reached.
 // Len() + Dropped() is the number of accepted validation notices.

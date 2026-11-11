@@ -250,9 +250,12 @@ func readAndValidate(c context.Context, rs io.ReadSeeker, conf *model.Configurat
 	if ctx, err = ReadContext(c, rs, conf); err != nil {
 		return nil, fmt.Errorf("read context: %w", err)
 	}
-	if conf == nil {
-		conf = ctx.Configuration
-	}
+	return validateReadContext(c, ctx, options)
+}
+
+// validateReadContext validates ctx as just returned by ReadContext, the second half of readAndValidate.
+func validateReadContext(c context.Context, ctx *model.Context, options ProgressOptions) (*model.Context, error) {
+	conf := ctx.Configuration
 
 	if err := reportProgress(options, ProgressStageValidating); err != nil {
 		return nil, err
