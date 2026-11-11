@@ -1002,3 +1002,27 @@ func setStrictPDF17XRefTable(ctx *model.Context) {
 		ValidationMode: model.ValidationStrict,
 	}
 }
+
+// TestEnsureFileIDSkipsNullInfoValues hashes an Info dict with null values, direct or by reference.
+func TestEnsureFileIDSkipsNullInfoValues(t *testing.T) {
+	ctx, err := model.NewContext(bytes.NewReader(nil), model.NewDefaultConfiguration())
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := model.V17
+	ctx.HeaderVersion = &version
+	ctx.Table[7] = model.NewXRefTableEntryGen0(nil)
+	ctx.Table[8] = model.NewXRefTableEntryGen0(types.Dict{
+		"Title":   *types.NewIndirectRef(7, 0),
+		"Subject": nil,
+		"Author":  types.StringLiteral("a"),
+	})
+	ctx.Info = types.NewIndirectRef(8, 0)
+
+	if err := ensureFileID(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.ID) != 2 || ctx.ID[0] != ctx.ID[1] {
+		t.Fatalf("ID: got %v", ctx.ID)
+	}
+}

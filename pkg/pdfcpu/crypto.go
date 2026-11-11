@@ -2416,6 +2416,10 @@ func fileID(ctx *model.Context) (types.HexLiteral, error) {
 			if err != nil {
 				return "", err
 			}
+			if o == nil {
+				// A null value, direct or by reference, carries no data to hash.
+				continue
+			}
 			h.Write([]byte(o.String()))
 		}
 	}
