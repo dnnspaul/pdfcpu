@@ -77,7 +77,7 @@ func validateDocumentInfoBeforeRoot(c context.Context, xRefTable *model.XRefTabl
 	if !metaDataAuthoritative {
 		return false, nil
 	}
-	if err := validateDocumentInfoObject(xRefTable); err != nil {
+	if err := validateDocumentInfoObject(c, xRefTable); err != nil {
 		return false, fmt.Errorf("document info: %w", err)
 	}
 	return true, nil
@@ -90,7 +90,7 @@ func validateDocumentInfoAfterRoot(c context.Context, xRefTable *model.XRefTable
 	if metaDataAuthoritative {
 		return nil
 	}
-	if err := validateDocumentInfoObject(xRefTable); err != nil {
+	if err := validateDocumentInfoObject(c, xRefTable); err != nil {
 		return fmt.Errorf("document info: %w", err)
 	}
 	return nil

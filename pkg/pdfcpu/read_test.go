@@ -188,7 +188,7 @@ func TestOffsetLastXRefSectionClassifiesEpilogueErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err = offsetLastXRefSection(ctx, 0)
+			_, err = offsetLastXRefSection(t.Context(), ctx, 0)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("got %v, want %v", err, tt.wantErr)
 			}
@@ -205,7 +205,7 @@ func TestOffsetLastXRefSectionPreservesReadError(t *testing.T) {
 		},
 	}
 
-	_, err := offsetLastXRefSection(ctx, 0)
+	_, err := offsetLastXRefSection(t.Context(), ctx, 0)
 	if !errors.Is(err, readErr) {
 		t.Fatalf("expected %v, got %v", readErr, err)
 	}
@@ -437,7 +437,7 @@ func TestRegisterXRefObjectsTracksEOLOffsets(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := registerXRefObjects(ctx, 1); err != nil {
+			if err := registerXRefObjects(t.Context(), ctx, 1); err != nil {
 				t.Fatal(err)
 			}
 			entry, ok := ctx.Find(7)
@@ -1782,7 +1782,7 @@ func TestRepairScannersRespectObjectLimit(t *testing.T) {
 				}
 				switch path {
 				case "register":
-					err = registerXRefObjects(ctx, 1)
+					err = registerXRefObjects(t.Context(), ctx, 1)
 				case "repair":
 					err = bypassXrefSection(t.Context(), ctx, 0, nil, 1)
 				case "resume":

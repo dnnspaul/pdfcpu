@@ -271,7 +271,7 @@ func validateThreadDict(c context.Context, xRefTable *model.XRefTable, o types.O
 	// Validate optional thread information dict entry.
 	o, found := d.Find("I")
 	if found && o != nil {
-		_, specViolations, err = validateDocumentInfoDict(xRefTable, o)
+		_, specViolations, err = validateDocumentInfoDict(c, xRefTable, o)
 		if err != nil {
 			return fmt.Errorf("%s I: %w", threadObjectContext(err, "thread", objNumber), err)
 		}

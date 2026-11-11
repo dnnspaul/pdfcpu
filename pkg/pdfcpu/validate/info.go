@@ -17,12 +17,14 @@ limitations under the License.
 package validate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -244,7 +246,7 @@ func validateDocInfoDictEntryWithSpecViolations(
 	return hasModDate, err
 }
 
-func validateDocumentInfoDict(xRefTable *model.XRefTable, obj types.Object) (hasModDate bool, specViolations []error, err error) {
+func validateDocumentInfoDict(c context.Context, xRefTable *model.XRefTable, obj types.Object) (hasModDate bool, specViolations []error, err error) {
 	infoObjNr := validationObjectNumber(0, obj)
 	defer func() {
 		err = model.WithValidationErrorObject(err, infoObjNr)
@@ -259,7 +261,11 @@ func validateDocumentInfoDict(xRefTable *model.XRefTable, obj types.Object) (has
 		return false, nil, nil
 	}
 
+	var batch contextutil.Batch
 	for _, k := range slices.Sorted(maps.Keys(d)) {
+		if err := batch.Check(c); err != nil {
+			return false, nil, err
+		}
 		v := d[k]
 
 		hmd, err := validateDocInfoDictEntryWithSpecViolations(xRefTable, k, v, infoObjNr, &specViolations)
@@ -281,7 +287,7 @@ func validateDocumentInfoDict(xRefTable *model.XRefTable, obj types.Object) (has
 	return hasModDate, specViolations, nil
 }
 
-func validateDocumentInfoObject(xRefTable *model.XRefTable) (err error) {
+func validateDocumentInfoObject(c context.Context, xRefTable *model.XRefTable) (err error) {
 	if xRefTable.Info == nil {
 		return nil
 	}
@@ -295,7 +301,7 @@ func validateDocumentInfoObject(xRefTable *model.XRefTable) (err error) {
 		err = model.WithValidationErrorObject(err, infoObjNr)
 	}()
 
-	hasModDate, specViolations, err := validateDocumentInfoDict(xRefTable, *xRefTable.Info)
+	hasModDate, specViolations, err := validateDocumentInfoDict(c, xRefTable, *xRefTable.Info)
 	if err != nil {
 		if xRefTable.ValidationMode != model.ValidationRelaxed || !errors.Is(err, model.ErrExpectedDict) {
 			return err

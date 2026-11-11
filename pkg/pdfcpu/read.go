@@ -295,13 +295,14 @@ func incrEpilogIndex(s string) int {
 
 // Get the file offset of the last XRefSection.
 // Go to end of file and search backwards for the first occurrence of startxref {offset} %%EOF
-func offsetLastXRefSection(ctx *model.Context, skip int64) (*int64, error) {
+func offsetLastXRefSection(c context.Context, ctx *model.Context, skip int64) (*int64, error) {
 	rs := ctx.Read.RS
 
 	var (
 		prevBuf, workBuf []byte
 		bufSize          int64 = 512
 		offset           int64
+		batch            contextutil.Batch
 	)
 
 	if ctx.Read.FileSize < bufSize {
@@ -309,6 +310,9 @@ func offsetLastXRefSection(ctx *model.Context, skip int64) (*int64, error) {
 	}
 
 	for i := 1; offset == 0; i++ {
+		if err := batch.Check(c); err != nil {
+			return nil, err
+		}
 
 		off, err := rs.Seek(-int64(i)*bufSize-skip, io.SeekEnd)
 		if err != nil {
@@ -1917,6 +1921,10 @@ func processObject(c context.Context, ctx *model.Context, line string, offset *i
 	withinObj := true
 	endInd, err := parseAndLoad(c, ctx, line, offset, incr, offsetPrev)
 	if err != nil {
+		// A cancellation, including the notice limit cancel, is not damaged input and must not be skipped.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, false, err
+		}
 		if ctx.XRefTable.ValidationMode != model.ValidationRelaxed || endInd < 0 {
 			return nil, false, err
 		}
@@ -1967,7 +1975,7 @@ func registerXRefEntry(ctx *model.Context, line string, offset int64, incr int) 
 	return true
 }
 
-func registerXRefObjects(ctx *model.Context, incr int) error {
+func registerXRefObjects(c context.Context, ctx *model.Context, incr int) error {
 	var offset int64
 	rd, err := newPositionedReader(ctx.Read.RS, &offset)
 	if err != nil {
@@ -1977,7 +1985,11 @@ func registerXRefObjects(ctx *model.Context, incr int) error {
 	s := newRepairScanner(ctx, rd)
 
 	withinObj := false
+	var batch contextutil.Batch
 	for s.Scan() {
+		if err := batch.Check(c); err != nil {
+			return err
+		}
 		rawLine := s.Text()
 		line := types.TrimLeadingComment(rawLine)
 		checkEndObj(&withinObj, &line)
@@ -2056,7 +2068,7 @@ func discardPreEncryptionObjects(ctx *model.Context) {
 // It populates the xRefTable by reading in all indirect objects line by line
 // and works on the assumption of a single xref section - meaning no incremental updates.
 func bypassXrefSection(c context.Context, ctx *model.Context, offExtra int64, wasErr error, incr int) error {
-	if errors.Is(wasErr, filter.ErrDecodeLimitExceeded) {
+	if errors.Is(wasErr, filter.ErrDecodeLimitExceeded) || errors.Is(wasErr, context.Canceled) || errors.Is(wasErr, context.DeadlineExceeded) {
 		return wasErr
 	}
 	ctx.Table = make(map[int]*model.XRefTableEntry)
@@ -2067,7 +2079,7 @@ func bypassXrefSection(c context.Context, ctx *model.Context, offExtra int64, wa
 		Free:       true,
 		Offset:     &z,
 		Generation: &g}
-	if err := registerXRefObjects(ctx, incr); err != nil {
+	if err := registerXRefObjects(c, ctx, incr); err != nil {
 		return err
 	}
 
@@ -2084,8 +2096,12 @@ func bypassXrefSection(c context.Context, ctx *model.Context, offExtra int64, wa
 
 	state := xrefRepairState{scanner: s}
 	var prevLine string
+	var batch contextutil.Batch
 
 	for {
+		if err := batch.Check(c); err != nil {
+			return err
+		}
 		line, err := scanLineRaw(state.scanner)
 		if err != nil {
 			if errors.Is(err, errMissingScannerLine) {
@@ -2276,7 +2292,7 @@ func buildXRefTableStartingAt(c context.Context, ctx *model.Context, offset *int
 		}
 
 		if offs[*offset] {
-			if offset, err = offsetLastXRefSection(ctx, ctx.Read.FileSize-*offset); err != nil {
+			if offset, err = offsetLastXRefSection(c, ctx, ctx.Read.FileSize-*offset); err != nil {
 				return err
 			}
 			if offs[*offset] {
@@ -2325,7 +2341,7 @@ func readXRefTable(c context.Context, ctx *model.Context) (err error) {
 		log.Read.Println("readXRefTable: begin")
 	}
 
-	offset, err := offsetLastXRefSection(ctx, 0)
+	offset, err := offsetLastXRefSection(c, ctx, 0)
 	if err != nil {
 		if !repairableLastXRefSection(ctx, err) {
 			return err
@@ -4007,6 +4023,10 @@ func dereferenceAndLoad(c context.Context, ctx *model.Context, objNr int, entry 
 			o, err = ParseObject(c, ctx, *entry.Offset+ctx.Read.RepairOffset, objNr, *entry.Generation)
 		}
 		if err != nil {
+			// A cancellation is not damaged input and must not be skipped.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			model.ShowSkipped(fmt.Sprintf("obj #%d reason: %v", objNr, err))
 		}
 		if unrecoverableObjectReadError(err) {

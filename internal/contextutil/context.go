@@ -32,3 +32,28 @@ func Check(c context.Context) error {
 	}
 	return c.Err()
 }
+
+// BatchInterval is the number of Batch.Check calls per context check.
+const BatchInterval = 1024
+
+// Batch checks a context once every BatchInterval calls, for loops whose iterations are too cheap for a check each.
+// The zero value is ready to use.
+type Batch struct {
+	n uint32
+}
+
+// Check returns the result of Check(c) on every BatchInterval-th call and nil otherwise.
+func (b *Batch) Check(c context.Context) error {
+	b.n++
+	if b.n%BatchInterval != 0 {
+		return nil
+	}
+	return checkBatch(c)
+}
+
+// checkBatch is Check outside of Batch.Check, so that Batch.Check stays cheap enough to be inlined.
+//
+//go:noinline
+func checkBatch(c context.Context) error {
+	return Check(c)
+}

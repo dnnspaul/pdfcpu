@@ -17,11 +17,13 @@ limitations under the License.
 package model
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -594,18 +596,22 @@ func resourceNameAtPos2(s, name string, prn PageResourceNames) (string, bool) {
 	return "", false
 }
 
-func parseContent(s string, relaxed, pdf20 bool) (PageResourceNames, error) {
+func parseContent(c context.Context, s string, relaxed, pdf20 bool) (PageResourceNames, error) {
 	var (
-		pre  string
-		name string
-		n    bool
-		ok   bool
+		pre   string
+		name  string
+		n     bool
+		ok    bool
+		batch contextutil.Batch
 	)
 	prn := NewPageResourceNames()
 
 	//fmt.Printf("parseContent:\n%s\n", hex.Dump([]byte(s)))
 
 	for pos := 0; ; {
+		if err := batch.Check(c); err != nil {
+			return nil, err
+		}
 		t, err := nextContentToken(pre, &s, prn, relaxed, pdf20)
 		pre = ""
 		if log.ParseEnabled() {

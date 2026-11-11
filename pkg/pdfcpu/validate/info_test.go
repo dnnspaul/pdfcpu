@@ -17,12 +17,14 @@ limitations under the License.
 package validate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -78,7 +80,7 @@ func runInfoValidationCase(t *testing.T, tt infoValidationCase) {
 	xRefTable := infoXRefTable(tt.mode, tt.object)
 	before := tt.object.Clone()
 
-	err := validateDocumentInfoObject(xRefTable)
+	err := validateDocumentInfoObject(t.Context(), xRefTable)
 	if got := err != nil; got != tt.wantErr {
 		t.Fatalf("error = %v, want error: %t", err, tt.wantErr)
 	}
@@ -206,7 +208,7 @@ func TestValidateDocumentInfoObjectReferenceRepairs(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			xRefTable := infoXRefTable(tt.mode, tt.object)
-			err := validateDocumentInfoObject(xRefTable)
+			err := validateDocumentInfoObject(t.Context(), xRefTable)
 			if got := err != nil; got != tt.wantErr {
 				t.Fatalf("error = %v, want error: %t", err, tt.wantErr)
 			}
@@ -232,7 +234,7 @@ func TestValidateDocumentInfoPieceInfoRequirement(t *testing.T) {
 			xRefTable.RootDict["PieceInfo"] = types.Dict{}
 			before := d.Clone()
 
-			err := validateDocumentInfoObject(xRefTable)
+			err := validateDocumentInfoObject(t.Context(), xRefTable)
 			if got := err != nil; got != tt.wantErr {
 				t.Fatalf("error = %v, want error: %t", err, tt.wantErr)
 			}
@@ -296,7 +298,7 @@ func metadataInfoXRefTable(mode int, infoModDate, xmpModDate string) (*model.XRe
 
 func validateInfoAndMetadataByAuthority(xRefTable *model.XRefTable, metadataAuthoritative bool) error {
 	if metadataAuthoritative {
-		if err := validateDocumentInfoObject(xRefTable); err != nil {
+		if err := validateDocumentInfoObject(context.Background(), xRefTable); err != nil {
 			return err
 		}
 		return validateRootMetadata(xRefTable, xRefTable.RootDict, OPTIONAL, model.V14)
@@ -304,7 +306,7 @@ func validateInfoAndMetadataByAuthority(xRefTable *model.XRefTable, metadataAuth
 	if err := validateRootMetadata(xRefTable, xRefTable.RootDict, OPTIONAL, model.V14); err != nil {
 		return err
 	}
-	return validateDocumentInfoObject(xRefTable)
+	return validateDocumentInfoObject(context.Background(), xRefTable)
 }
 
 // TestMetadataAuthorityControlsCachedInfoValues records how modification dates choose cached Info or XMP values.
@@ -431,5 +433,22 @@ func TestMetadataStreamEntries(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestValidateDocumentInfoStopsWhenCancelled verifies that validating a large info dict stops on cancellation.
+func TestValidateDocumentInfoStopsWhenCancelled(t *testing.T) {
+	d := types.Dict{}
+	for i := range 4 * contextutil.BatchInterval {
+		d[fmt.Sprintf("Key%d", i)] = types.StringLiteral("value")
+	}
+	xRefTable := infoXRefTable(model.ValidationRelaxed, d)
+	c, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := validateDocumentInfoObject(c, xRefTable); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context.Canceled", err)
+	}
+	if len(xRefTable.Properties) >= len(d) {
+		t.Fatalf("recorded %d properties after cancellation, want fewer than %d", len(xRefTable.Properties), len(d))
 	}
 }

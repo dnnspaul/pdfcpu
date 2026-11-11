@@ -2443,7 +2443,7 @@ func (e *contentParseError) Unwrap() error {
 	return e.err
 }
 
-func (xRefTable *XRefTable) consolidateResourcesWithContent(pageDict, resDict types.Dict, pageNr int, consolidateRes bool) error {
+func (xRefTable *XRefTable) consolidateResourcesWithContent(c context.Context, pageDict, resDict types.Dict, pageNr int, consolidateRes bool) error {
 	if !consolidateRes {
 		return nil
 	}
@@ -2458,7 +2458,7 @@ func (xRefTable *XRefTable) consolidateResourcesWithContent(pageDict, resDict ty
 	}
 
 	// Calculate resources required by the content stream of this page.
-	prn, err := parseContent(string(bb), xRefTable.ValidationMode == ValidationRelaxed, xRefTable.PDF20())
+	prn, err := parseContent(c, string(bb), xRefTable.ValidationMode == ValidationRelaxed, xRefTable.PDF20())
 	if err != nil {
 		return fmt.Errorf("%s: %w", contentContext, &contentParseError{err})
 	}
@@ -2597,7 +2597,7 @@ func (xRefTable *XRefTable) processPageTreeForPageDictDepth(c context.Context, r
 
 	kids := d.ArrayEntry("Kids")
 	if kids == nil {
-		return d, root, xRefTable.consolidateResourcesWithContent(d, pAttrs.Resources, page, consolidateRes)
+		return d, root, xRefTable.consolidateResourcesWithContent(c, d, pAttrs.Resources, page, consolidateRes)
 	}
 	objNr := root.ObjectNumber.Value()
 	if err := visit.Enter(objNr); err != nil {
@@ -2744,7 +2744,8 @@ func (xRefTable *XRefTable) consolidatePageResourcesForNode(
 	kids := d.ArrayEntry("Kids")
 	if kids == nil {
 		currentPageNr := *pageNr + 1
-		if err := xRefTable.consolidateResourcesWithContent(d, pAttrs.Resources, currentPageNr, true); err != nil {
+		// ConsolidatePageResources has no context parameter.
+		if err := xRefTable.consolidateResourcesWithContent(context.TODO(), d, pAttrs.Resources, currentPageNr, true); err != nil {
 			return &pageResourceContextError{
 				pageNr: currentPageNr,
 				objNr:  root.ObjectNumber.Value(),

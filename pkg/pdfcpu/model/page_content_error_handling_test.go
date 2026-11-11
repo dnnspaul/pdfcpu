@@ -117,7 +117,7 @@ func TestConsolidateResourcesRelaxesFlateChecksumError(t *testing.T) {
 	d := types.Dict{"Contents": sd}
 
 	xRefTable := &XRefTable{ValidationMode: ValidationRelaxed}
-	if err := xRefTable.consolidateResourcesWithContent(d, types.Dict{}, 5, true); err != nil {
+	if err := xRefTable.consolidateResourcesWithContent(t.Context(), d, types.Dict{}, 5, true); err != nil {
 		t.Fatalf("expected relaxed checksum handling, got %v", err)
 	}
 }
