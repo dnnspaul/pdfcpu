@@ -19,6 +19,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 )
 
 // ErrResourceLimit signals that processing stopped at a configured resource limit.
@@ -72,4 +73,33 @@ func (e *ResourceLimitError) Unwrap() error {
 // Is classifies this error as ErrResourceLimit.
 func (e *ResourceLimitError) Is(target error) bool {
 	return target == ErrResourceLimit
+}
+
+// CheckObjectNumber returns a *ResourceLimitError of kind LimitObjectNumber if
+// objNr exceeds l.MaxObjectNumber. A zero or negative MaxObjectNumber disables the check.
+func (l ResourceLimits) CheckObjectNumber(objNr int64) error {
+	if l.MaxObjectNumber > 0 && objNr > int64(l.MaxObjectNumber) {
+		return &ResourceLimitError{Kind: LimitObjectNumber, Limit: int64(l.MaxObjectNumber), Value: objNr}
+	}
+	return nil
+}
+
+// CheckObjectRange checks the last object number of count objects starting at start
+// against l.MaxObjectNumber. A count of zero or less checks nothing. start is expected to be
+// zero or greater: callers reject a negative object number first, and the overflow guard is
+// only applied for a positive start.
+func (l ResourceLimits) CheckObjectRange(start, count int64) error {
+	if count <= 0 {
+		return nil
+	}
+	if start > 0 && count-1 > math.MaxInt64-start {
+		return l.CheckObjectNumber(math.MaxInt64)
+	}
+	return l.CheckObjectNumber(start + count - 1)
+}
+
+// CheckXRefSize checks a cross-reference /Size, which is one greater than the
+// highest object number, against l.MaxObjectNumber.
+func (l ResourceLimits) CheckXRefSize(size int64) error {
+	return l.CheckObjectRange(0, size)
 }

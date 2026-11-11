@@ -514,6 +514,13 @@ type ResourceLimits struct {
 	// MaxObjectCount limits the cross-reference object number range.
 	MaxObjectCount int
 
+	// MaxObjectNumber limits the object numbers a PDF may declare: in object
+	// headers, cross-reference sections and streams, trailer and xref stream
+	// /Size, and object stream headers. Reading stops with a ResourceLimitError
+	// of kind LimitObjectNumber before any table is sized from a larger number.
+	// ISO 32000-1 Annex C allows 8,388,607. Zero or negative means unlimited.
+	MaxObjectNumber int
+
 	// MaxObjectStreamCount limits object stream /N.
 	MaxObjectStreamCount int
 

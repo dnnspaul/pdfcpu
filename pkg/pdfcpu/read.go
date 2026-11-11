@@ -497,6 +497,9 @@ func parseXRefTableSubsectionHeader(fields []string, entryCount int, limits mode
 	if startObjNumber < 0 || objCount < 0 {
 		return 0, 0, errCorruptXRefSubsection
 	}
+	if err := limits.CheckObjectRange(int64(startObjNumber), int64(objCount)); err != nil {
+		return 0, 0, err
+	}
 	if objCount > limits.MaxObjectCount || startObjNumber > limits.MaxObjectCount-objCount {
 		return 0, 0, fmt.Errorf("xref subsection object range exceeds limit %d: %w", limits.MaxObjectCount, errCorruptXRefSubsection)
 	}
@@ -510,6 +513,9 @@ func parseXRefTableSubsectionHeader(fields []string, entryCount int, limits mode
 func xRefTableObjectNumber(startObjNumber, index, entryCount int, limits model.ResourceLimits) (int, error) {
 	if entryCount >= limits.MaxXRefEntries {
 		return 0, fmt.Errorf("xref entry count exceeds limit %d", limits.MaxXRefEntries)
+	}
+	if err := limits.CheckObjectRange(int64(startObjNumber), int64(index)+1); err != nil {
+		return 0, err
 	}
 	if index >= limits.MaxObjectCount-startObjNumber {
 		return 0, fmt.Errorf("xref subsection object range exceeds limit %d: %w", limits.MaxObjectCount, errCorruptXRefSubsection)
@@ -815,6 +821,9 @@ func parseObjectStreamWithBudget(c context.Context, osd *types.ObjectStreamDict,
 			errCorruptObjectStreamDict,
 		)
 	}
+	if err := checkObjectStreamObjectNumbers(objs, limits); err != nil {
+		return err
+	}
 
 	// e.g., 10 0 11 25 = 2 Objects: #10 @ offset 0, #11 @ offset 25
 
@@ -833,6 +842,24 @@ func parseObjectStreamWithBudget(c context.Context, osd *types.ObjectStreamDict,
 		log.Read.Println("parseObjectStream end")
 	}
 
+	return nil
+}
+
+// checkObjectStreamObjectNumbers checks the object numbers of an object stream prolog
+// against limits.MaxObjectNumber. A number that does not parse is left to the object parser.
+func checkObjectStreamObjectNumbers(objs []string, limits model.ResourceLimits) error {
+	if limits.MaxObjectNumber <= 0 {
+		return nil
+	}
+	for i := 0; i < len(objs); i += 2 {
+		objNr, err := strconv.ParseInt(objs[i], 10, 64)
+		if err != nil && !errors.Is(err, strconv.ErrRange) {
+			continue
+		}
+		if err := limits.CheckObjectNumber(objNr); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -992,6 +1019,12 @@ func extractXRefTableEntriesFromXRefStream(buf []byte, offExtra int64, xsd *type
 		}
 		c2 := bufToInt64(buf[i+i1 : i+i1+i2])
 		c3 := bufToInt64(buf[i+i1+i2 : i+i1+i2+i3])
+		if c1 == 2 {
+			// c2 is the object number of the object stream holding objNr.
+			if err := ctx.Configuration.Limits.CheckObjectNumber(c2); err != nil {
+				return err
+			}
+		}
 
 		entry := createXRefTableEntryFromXRefStream(c1, objNr, c2, c3, offExtra, ctx.Read.ObjectStreams, incr)
 		ctx.Table[objNr] = &entry
@@ -1133,6 +1166,9 @@ func parseXRefStream(c context.Context, ctx *model.Context, rd io.Reader, offset
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Configuration.Limits.CheckObjectNumber(int64(*objNr)); err != nil {
+		return nil, err
+	}
 
 	// parse this object
 	if log.ReadEnabled() {
@@ -1210,6 +1246,19 @@ func parseTrailerSize(xRefTable *model.XRefTable, d types.Dict) error {
 	}
 	xRefTable.Size = &v
 	return nil
+}
+
+// checkTrailerSize checks a direct /Size of every trailer against MaxObjectNumber,
+// not only the one that sets xRefTable.Size.
+func checkTrailerSize(xRefTable *model.XRefTable, d types.Dict) error {
+	if xRefTable.Conf == nil {
+		return nil
+	}
+	size, ok := d["Size"].(types.Integer)
+	if !ok {
+		return nil
+	}
+	return xRefTable.Conf.Limits.CheckXRefSize(int64(size.Value()))
 }
 
 func directTrailerIntegerEntry(d types.Dict, key string) (*types.Integer, error) {
@@ -1338,6 +1387,10 @@ func parseTrailer(xRefTable *model.XRefTable, d types.Dict) error {
 		if log.ReadEnabled() {
 			log.Read.Printf("parseTrailer: Encrypt object: %s\n", *xRefTable.Encrypt)
 		}
+	}
+
+	if err := checkTrailerSize(xRefTable, d); err != nil {
+		return err
 	}
 
 	if xRefTable.Size == nil {
@@ -1831,6 +1884,9 @@ func parseAndLoad(c context.Context, ctx *model.Context, line string, offset *in
 	if *objNr == 0 {
 		return 0, nil
 	}
+	if err := ctx.Configuration.Limits.CheckObjectNumber(int64(*objNr)); err != nil {
+		return 0, err
+	}
 
 	off := *offset
 
@@ -1921,8 +1977,8 @@ func processObject(c context.Context, ctx *model.Context, line string, offset *i
 	withinObj := true
 	endInd, err := parseAndLoad(c, ctx, line, offset, incr, offsetPrev)
 	if err != nil {
-		// A cancellation, including the notice limit cancel, is not damaged input and must not be skipped.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// A cancellation, including the notice limit cancel, or a resource limit is not damaged input and must not be skipped.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, model.ErrResourceLimit) {
 			return nil, false, err
 		}
 		if ctx.XRefTable.ValidationMode != model.ValidationRelaxed || endInd < 0 {
@@ -1961,10 +2017,13 @@ func ensureNoStartXRef(line string, i int) bool {
 	return i == 0 || i > 0 && line[i-1] != 't'
 }
 
-func registerXRefEntry(ctx *model.Context, line string, offset int64, incr int) bool {
+func registerXRefEntry(ctx *model.Context, line string, offset int64, incr int) (bool, error) {
 	objNr, generation, err := model.ParseObjectAttributes(&line)
 	if err != nil || *objNr == 0 {
-		return false
+		return false, nil
+	}
+	if err := ctx.Configuration.Limits.CheckObjectNumber(int64(*objNr)); err != nil {
+		return false, err
 	}
 
 	ctx.Table[*objNr] = &model.XRefTableEntry{
@@ -1972,7 +2031,7 @@ func registerXRefEntry(ctx *model.Context, line string, offset int64, incr int) 
 		Offset:     &offset,
 		Incr:       incr,
 	}
-	return true
+	return true, nil
 }
 
 func registerXRefObjects(c context.Context, ctx *model.Context, incr int) error {
@@ -1993,8 +2052,14 @@ func registerXRefObjects(c context.Context, ctx *model.Context, incr int) error 
 		rawLine := s.Text()
 		line := types.TrimLeadingComment(rawLine)
 		checkEndObj(&withinObj, &line)
-		if objCandidate(withinObj, line) && registerXRefEntry(ctx, line, offset, incr) {
-			withinObj = !strings.Contains(line, "endobj")
+		if objCandidate(withinObj, line) {
+			registered, err := registerXRefEntry(ctx, line, offset, incr)
+			if err != nil {
+				return err
+			}
+			if registered {
+				withinObj = !strings.Contains(line, "endobj")
+			}
 		}
 		offset += int64(len(rawLine) + 1)
 	}
@@ -2068,7 +2133,8 @@ func discardPreEncryptionObjects(ctx *model.Context) {
 // It populates the xRefTable by reading in all indirect objects line by line
 // and works on the assumption of a single xref section - meaning no incremental updates.
 func bypassXrefSection(c context.Context, ctx *model.Context, offExtra int64, wasErr error, incr int) error {
-	if errors.Is(wasErr, filter.ErrDecodeLimitExceeded) || errors.Is(wasErr, context.Canceled) || errors.Is(wasErr, context.DeadlineExceeded) {
+	if errors.Is(wasErr, filter.ErrDecodeLimitExceeded) || errors.Is(wasErr, context.Canceled) || errors.Is(wasErr, context.DeadlineExceeded) ||
+		errors.Is(wasErr, model.ErrResourceLimit) {
 		return wasErr
 	}
 	ctx.Table = make(map[int]*model.XRefTableEntry)

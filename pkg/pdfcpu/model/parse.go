@@ -1193,6 +1193,9 @@ func xRefStreamSize(sd *types.StreamDict, limits ResourceLimits, relaxed bool) (
 		}
 		return 0, errors.New("invalid \"Size\"")
 	}
+	if err := limits.CheckXRefSize(int64(size)); err != nil {
+		return 0, err
+	}
 	if size > limits.MaxObjectCount {
 		return 0, fmt.Errorf("\"Size\" %d exceeds limit %d", size, limits.MaxObjectCount)
 	}
@@ -1219,7 +1222,13 @@ func xRefStreamObjectsFromIndex(indArr types.Array, size int, limits ResourceLim
 
 		start := startObj.Value()
 		n := count.Value()
-		if start < 0 || n < 0 || start > limits.MaxObjectCount-n {
+		if start < 0 || n < 0 {
+			return nil, 0, errXrefStreamCorruptIndex
+		}
+		if err := limits.CheckObjectRange(int64(start), int64(n)); err != nil {
+			return nil, 0, err
+		}
+		if start > limits.MaxObjectCount-n {
 			return nil, 0, errXrefStreamCorruptIndex
 		}
 		end := start + n
