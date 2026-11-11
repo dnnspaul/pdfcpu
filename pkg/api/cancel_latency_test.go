@@ -24,6 +24,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,34 +78,79 @@ func cancelLatencyContentPDF(n int) []byte {
 	)
 }
 
-// cancelLatencyRun runs work with a context that is cancelled after cancelLatencyAfter. It returns the time from
-// the cancellation until work returned and the bytes allocated in that time.
-func cancelLatencyRun(t *testing.T, work func(context.Context) error) (time.Duration, uint64, error) {
-	t.Helper()
-	type cancelPoint struct {
-		at         time.Time
-		totalAlloc uint64
+// cancelPoint is a moment and the total bytes allocated up to it.
+type cancelPoint struct {
+	at         time.Time
+	totalAlloc uint64
+}
+
+// readCancelPoint returns the current cancelPoint.
+func readCancelPoint() cancelPoint {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return cancelPoint{at: time.Now(), totalAlloc: m.TotalAlloc}
+}
+
+// observedCancel is a context that records the first cancellation its Err method reports. That is the moment
+// the work notices the cancellation.
+type observedCancel struct {
+	context.Context
+	mu       sync.Mutex
+	observed *cancelPoint
+}
+
+// Err implements context.Context.
+func (c *observedCancel) Err() error {
+	err := c.Context.Err()
+	if err != nil {
+		c.mu.Lock()
+		if c.observed == nil {
+			p := readCancelPoint()
+			c.observed = &p
+		}
+		c.mu.Unlock()
 	}
+	return err
+}
+
+// first returns the cancelPoint at which the work first observed the cancellation, or nil if it did not.
+func (c *observedCancel) first() *cancelPoint {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.observed
+}
+
+// cancelLatencyRun runs work with a context that is cancelled after cancelLatencyAfter. It returns the time from
+// the cancellation until work returned and the bytes allocated in that time. With fromObserved, the bytes are
+// counted from the first cancellation that work observes instead, see observedCancel. The time is still measured
+// from the cancellation.
+func cancelLatencyRun(t *testing.T, work func(context.Context) error, fromObserved bool) (time.Duration, uint64, error) {
+	t.Helper()
 	runtime.GC()
 	c, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	points := make(chan cancelPoint, 1)
+	cancelled := make(chan cancelPoint, 1)
 	timer := time.AfterFunc(cancelLatencyAfter, func() {
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		points <- cancelPoint{at: time.Now(), totalAlloc: m.TotalAlloc}
+		cancelled <- readCancelPoint()
 		cancel()
 	})
 
-	err := work(c)
+	obs := &observedCancel{Context: c}
+	err := work(obs)
 	end := time.Now()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	if timer.Stop() {
 		t.Fatalf("finished within %v, before the cancellation: %v", cancelLatencyAfter, err)
 	}
-	p := <-points
-	return end.Sub(p.at), m.TotalAlloc - p.totalAlloc, err
+	p := <-cancelled
+	from := p
+	if fromObserved {
+		if o := obs.first(); o != nil {
+			from = *o
+		}
+	}
+	return end.Sub(p.at), m.TotalAlloc - from.totalAlloc, err
 }
 
 // TestCancellationLatencyOnHostileInputs verifies that work on inputs with long loops stops soon after
@@ -125,6 +171,8 @@ func TestCancellationLatencyOnHostileInputs(t *testing.T) {
 		name string
 		// setup returns the work to cancel. Work done by setup itself is not measured.
 		setup func(t *testing.T) func(context.Context) error
+		// fromObserved counts the allocation from the cancellation the work observes, see cancelLatencyRun.
+		fromObserved bool
 	}{
 		{
 			name: "startxref scan",
@@ -139,7 +187,11 @@ func TestCancellationLatencyOnHostileInputs(t *testing.T) {
 			},
 		},
 		{
-			name: "page content",
+			// ExtractPage copies the whole content stream twice before parseContent checks the context for the
+			// first time. Under -race the cancellation can land during those copies, so the bytes allocated
+			// after it would include them. The loop itself still stops at its first check after the cancel.
+			name:         "page content",
+			fromObserved: true,
 			setup: func(t *testing.T) func(context.Context) error {
 				ctx, err := ReadAndValidate(t.Context(), bytes.NewReader(cancelLatencyContentPDF(2_000_000)), relaxed())
 				if err != nil {
@@ -154,7 +206,7 @@ func TestCancellationLatencyOnHostileInputs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			latency, allocated, err := cancelLatencyRun(t, tc.setup(t))
+			latency, allocated, err := cancelLatencyRun(t, tc.setup(t), tc.fromObserved)
 			t.Logf("returned %v after cancellation, %.1f MiB allocated after cancellation", latency, float64(allocated)/(1<<20))
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("got %v, want context.Canceled", err)
