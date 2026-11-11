@@ -65,9 +65,11 @@ func TestPageBoundaryEntryContext(t *testing.T) {
 
 func TestPageBoundariesIncludePageTreeAndPageContext(t *testing.T) {
 	xRefTable := newXRefTable(NewDefaultConfiguration())
+	// The page has a MediaBox so that the malformed TrimBox, not a missing MediaBox, is what fails.
 	pageRef, err := xRefTable.IndRefForObject(1, types.Dict{
-		"Type":    types.Name("Page"),
-		"TrimBox": types.Integer(1),
+		"Type":     types.Name("Page"),
+		"MediaBox": types.RectForFormat("A4").Array(),
+		"TrimBox":  types.Integer(1),
 	})
 	if err != nil {
 		t.Fatal(err)

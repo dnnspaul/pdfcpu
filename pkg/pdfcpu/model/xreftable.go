@@ -2049,6 +2049,10 @@ type InheritedPageAttrs struct {
 }
 
 func rect(xRefTable *XRefTable, a types.Array) (*types.Rectangle, error) {
+	if len(a) < 4 {
+		return nil, fmt.Errorf("expected at least 4 numbers, got %d", len(a))
+	}
+
 	llx, err := xRefTable.DereferenceNumber(a[0])
 	if err != nil {
 		return nil, err
@@ -3228,6 +3232,104 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
 		c, objNr, kids, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth, visit)
 }
 
+func (xRefTable *XRefTable) countPageTreeLeaves(
+	c context.Context,
+	root types.IndirectRef,
+	n *int,
+	limit int,
+	depth int,
+	visit *PageTreeVisit) error {
+	if err := xRefTable.CheckRecursionDepth("page tree", depth); err != nil {
+		return err
+	}
+
+	objNr := root.ObjectNumber.Value()
+	d, err := xRefTable.DereferenceDict(root)
+	if err != nil {
+		return fmt.Errorf("page tree obj#%d: dereference dict: %w", objNr, err)
+	}
+	if d == nil {
+		return fmt.Errorf("page tree obj#%d: missing dict", objNr)
+	}
+	pageType, err := xRefTable.pageTreeNodeType(d, objNr)
+	if err != nil {
+		return err
+	}
+
+	if pageType == "Page" {
+		if *n >= limit {
+			return fmt.Errorf("page tree obj#%d: more pages than the %d objects of the PDF", objNr, limit)
+		}
+		*n++
+		return nil
+	}
+
+	o, found := d.Find("Kids")
+	if !found || o == nil {
+		return fmt.Errorf("page tree obj#%d: missing Kids", objNr)
+	}
+	o, err = xRefTable.Dereference(o)
+	if err != nil {
+		return fmt.Errorf("page tree obj#%d: Kids: dereference: %w", objNr, err)
+	}
+	if o == nil {
+		return fmt.Errorf("page tree obj#%d: missing Kids", objNr)
+	}
+	if err := visit.Enter(objNr); err != nil {
+		return fmt.Errorf("page tree obj#%d: %w", objNr, err)
+	}
+	defer visit.Leave(objNr)
+
+	kids, ok := o.(types.Array)
+	if !ok {
+		return fmt.Errorf("page tree obj#%d: Kids: expected array, got %T", objNr, o)
+	}
+
+	for childIndex, o := range kids {
+		if err := contextutil.Check(c); err != nil {
+			return err
+		}
+		if o == nil {
+			return fmt.Errorf("page tree obj#%d: kid %d: nil object", objNr, childIndex+1)
+		}
+		indRef, ok := o.(types.IndirectRef)
+		if !ok {
+			return fmt.Errorf("page tree obj#%d: kid %d: expected indirect reference, got %T", objNr, childIndex+1, o)
+		}
+		if err := xRefTable.countPageTreeLeaves(c, indRef, n, limit, depth+1, visit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CountPageTreeLeaves returns the number of pages reachable through the Kids
+// arrays of the page tree and supports cancellation. Unlike EnsurePageCount it
+// ignores the declared Count entries. It walks the page tree like
+// PageBoundaries and rejects page tree cycles, duplicate page tree nodes,
+// nesting beyond ResourceLimits.MaxRecursionDepth and more pages than the
+// cross-reference table has entries. It does not set PageCount.
+func (xRefTable *XRefTable) CountPageTreeLeaves(c context.Context) (int, error) {
+	if err := contextutil.Check(c); err != nil {
+		return 0, err
+	}
+	if xRefTable == nil {
+		return 0, ErrMissingXRefTable
+	}
+	root, err := xRefTable.Pages()
+	if err != nil {
+		return 0, fmt.Errorf("pages root: %w", err)
+	}
+	if root == nil {
+		return 0, errors.New("missing pages root")
+	}
+	n := 0
+	if err := xRefTable.countPageTreeLeaves(c, *root, &n, len(xRefTable.Table), 0, NewPageTreeVisit()); err != nil {
+		return 0, fmt.Errorf("page tree: %w", err)
+	}
+	return n, nil
+}
+
 // PageBoundaries returns page boundaries sorted by page number and supports cancellation.
 func (xRefTable *XRefTable) PageBoundaries(c context.Context, selectedPages types.IntSet) ([]PageBoundaries, error) {
 	if err := contextutil.Check(c); err != nil {
@@ -3250,8 +3352,11 @@ func (xRefTable *XRefTable) PageBoundaries(c context.Context, selectedPages type
 	}
 
 	i := 0
-	mb := &types.Rectangle{}
-	cb := &types.Rectangle{}
+	// mb starts nil so a page with no MediaBox on its path, and none on an
+	// earlier page in tree order, fails with "missing effective box". cb starts
+	// nil for symmetry; its start value is never observed, because any MediaBox
+	// on the path resets it.
+	var mb, cb *types.Rectangle
 	pbs := make([]PageBoundaries, xRefTable.PageCount)
 	if err := xRefTable.collectPageBoundariesForPageTree(
 		c, root, &mb, &cb, pbs, 0, &i, selectedPages, 0, NewPageTreeVisit(),
