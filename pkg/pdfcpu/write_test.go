@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -291,5 +292,77 @@ func TestWriteIncrementRejectsInvalidInput(t *testing.T) {
 				t.Fatalf("expected %v, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+// TestWriteFlatObjectWritesNullForInUseEntryWithoutObject checks that an in-use xref entry without an
+// object is written as a null object, as the indirect reference path does, and not as an error.
+func TestWriteFlatObjectWritesNullForInUseEntryWithoutObject(t *testing.T) {
+	ctx := testMergeContext(t)
+	const objNr = 9999
+	ctx.Table[objNr] = model.NewXRefTableEntryGen0(nil)
+
+	var buf bytes.Buffer
+	ctx.Write = model.NewWriteContext("\n")
+	ctx.Write.Writer = bufio.NewWriter(&buf)
+	if err := writeFlatObject(t.Context(), ctx, objNr); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Write.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := buf.String(), "9999 0 obj\nnull\nendobj\n"; !strings.Contains(got, want) {
+		t.Fatalf("written: %q, want it to contain %q", got, want)
+	}
+}
+
+// TestWriteIndirectObjectNullHeaderUsesTableGeneration checks that a dangling object written as null
+// has the generation of its xref table entry, whichever of two references with different
+// generations is written first. The header must agree with the xref entry.
+func TestWriteIndirectObjectNullHeaderUsesTableGeneration(t *testing.T) {
+	const objNr = 9999
+	const entryGen = 1
+	for _, order := range [][]int{{3, entryGen}, {entryGen, 3}} {
+		ctx := testMergeContext(t)
+		gen := entryGen
+		ctx.Table[objNr] = &model.XRefTableEntry{Generation: &gen}
+
+		var buf bytes.Buffer
+		ctx.Write = model.NewWriteContext("\n")
+		ctx.Write.Writer = bufio.NewWriter(&buf)
+		for _, g := range order {
+			ir := types.IndirectRef{ObjectNumber: objNr, GenerationNumber: types.Integer(g)}
+			if err := writeIndirectObject(t.Context(), ctx, ir); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := ctx.Write.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		want := "9999 1 obj\nnull\nendobj\n"
+		if got := buf.String(); !strings.Contains(got, want) {
+			t.Fatalf("order %v: written %q, want it to contain %q", order, got, want)
+		}
+	}
+}
+
+// TestWriteIndirectObjectSkipsObjectZero checks that a reference to object 0, the head of the
+// free list and not an object, writes nothing, not even a null object with the generation of
+// the free entry.
+func TestWriteIndirectObjectSkipsObjectZero(t *testing.T) {
+	ctx := testMergeContext(t)
+	ctx.Table[0] = model.NewFreeHeadXRefTableEntry()
+
+	var buf bytes.Buffer
+	ctx.Write = model.NewWriteContext("\n")
+	ctx.Write.Writer = bufio.NewWriter(&buf)
+	if err := writeIndirectObject(t.Context(), ctx, types.IndirectRef{ObjectNumber: 0, GenerationNumber: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Write.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "" {
+		t.Fatalf("written %q, want nothing", got)
 	}
 }

@@ -608,6 +608,51 @@ func TestExtractPagesContextReuse(t *testing.T) {
 	}
 }
 
+// TestExtractPageKeepsNonRefNamedDestPage pins that extracting a page keeps a named destination whose
+// array starts with a page number, not a reference, as it is in the input. Its page number stays 0.
+func TestExtractPageKeepsNonRefNamedDestPage(t *testing.T) {
+	data := failureTestPDF(
+		"<< /Type /Catalog /Pages 2 0 R /Names << /Dests 4 0 R >> >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [0 0 595 842] >>",
+		"<< /Type /Page /Parent 2 0 R >>",
+		"<< /Names [(a) [3 0 R /Fit] (z) [0 /Fit]] >>",
+	)
+	ctx := pageHelpersRead(t, data)
+	r, err := ExtractPage(context.Background(), ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := pageHelpersRead(t, out)
+
+	if got.Names["Dests"] == nil {
+		t.Fatal("named destinations not kept")
+	}
+	found := false
+	if err := got.Names["Dests"].Process(context.Background(), got.XRefTable, func(x *model.XRefTable, k string, v *types.Object) error {
+		if k != "z" {
+			return nil
+		}
+		found = true
+		arr, err := x.DereferenceArray(*v)
+		if err != nil {
+			return err
+		}
+		if len(arr) == 0 || arr[0] != types.Integer(0) {
+			return fmt.Errorf("dest z: got %v, want page 0", arr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("named destination z not kept")
+	}
+}
+
 // pageHelpersNamedDestsTreePDF builds a four page PDF whose Dests name tree has two leaves and holds
 // destination arrays and a destination dict, direct and as indirect objects, for every page.
 func pageHelpersNamedDestsTreePDF() []byte {

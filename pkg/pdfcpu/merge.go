@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 
 	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/log"
@@ -1071,6 +1072,9 @@ type objectPatcher struct {
 	marker       *patchMarker
 	activeArrays map[patchArrayID]bool
 	stack        []patchFrame
+	// collect, if not nil, makes the patcher only record the references that lookup
+	// does not contain: their numbers, each with the lowest generation seen.
+	collect map[int]int
 }
 
 func (r *patchRestore) apply() {
@@ -1125,6 +1129,14 @@ func (p *objectPatcher) pushArray(a types.Array) {
 func (p *objectPatcher) patch(f patchFrame) {
 	switch o := f.object.(type) {
 	case types.IndirectRef:
+		if p.collect != nil {
+			if n := o.ObjectNumber.Value(); n != 0 {
+				if _, ok := p.lookup[n]; !ok {
+					addDanglingRef(p.collect, n, o.GenerationNumber.Value())
+				}
+			}
+			return
+		}
 		patchIndRef(&o, p.lookup)
 		f.target.set(o)
 	case types.Dict:
@@ -1146,7 +1158,8 @@ func (p *objectPatcher) patch(f patchFrame) {
 }
 
 func (p *objectPatcher) run(o types.Object) types.Object {
-	var result types.Object
+	// Objects without references, eg. numbers, are returned unchanged.
+	result := o
 	p.stack = append(p.stack, patchFrame{object: o, target: patchTarget{root: &result}})
 	for len(p.stack) > 0 {
 		i := len(p.stack) - 1
@@ -1179,6 +1192,65 @@ func patchObject(o types.Object, lookup map[int]int) types.Object {
 	return result
 }
 
+// addDanglingRef records the dangling reference number n with generation gen in dangling.
+// The lowest generation is kept, so the result does not depend on the traversal order.
+func addDanglingRef(dangling map[int]int, n, gen int) {
+	if g, ok := dangling[n]; !ok || gen < g {
+		dangling[n] = gen
+	}
+}
+
+// danglingRefs adds to dangling the references in o that lookup does not contain, by number
+// and generation. o is not changed.
+func danglingRefs(o types.Object, lookup map[int]int, dangling map[int]int) {
+	p := objectPatcher{lookup: lookup, marker: &patchMarker{}, activeArrays: map[patchArrayID]bool{}, collect: dangling}
+	p.run(o)
+}
+
+// collectNameTreeDangling adds to dangling the dangling references of the values of n.
+func collectNameTreeDangling(c context.Context, n *model.Node, lookup map[int]int, dangling map[int]int) error {
+	if n == nil {
+		return nil
+	}
+
+	collectValues := func(xRefTable *model.XRefTable, k string, v *types.Object) error {
+		if v == nil {
+			return nil
+		}
+		danglingRefs(*v, lookup, dangling)
+		return nil
+	}
+
+	return n.Process(c, nil, collectValues)
+}
+
+// collectDanglingRefs returns the numbers and generations of the references in the source objects
+// and in the cached name trees that name no source object, ie. dangling references.
+func collectDanglingRefs(c context.Context, ctxSrc *model.Context, objNrs types.IntSet, lookup map[int]int) (map[int]int, error) {
+	dangling := map[int]int{}
+
+	for k := range objNrs {
+		entry := ctxSrc.Table[k]
+		if entry == nil || entry.Free {
+			continue
+		}
+		if _, ok := entry.Object.(types.LazyObjectStreamObject); ok {
+			if _, err := dereferencedObject(c, ctxSrc, k); err != nil {
+				return nil, err
+			}
+		}
+		danglingRefs(entry.Object, lookup, dangling)
+	}
+
+	for _, v := range ctxSrc.Names {
+		if err := collectNameTreeDangling(c, v, lookup, dangling); err != nil {
+			return nil, err
+		}
+	}
+
+	return dangling, nil
+}
+
 func objNrsIntSet(ctx *model.Context) types.IntSet {
 	objNrs := types.IntSet{}
 	if ctx == nil {
@@ -1199,7 +1271,8 @@ func objNrsIntSet(ctx *model.Context) types.IntSet {
 func lookupTable(keys types.IntSet, i int) map[int]int {
 	m := map[int]int{}
 
-	for k := range keys {
+	// Iterate in key order so that merged object numbers are reproducible.
+	for _, k := range slices.Sorted(maps.Keys(keys)) {
 		m[k] = i
 		i++
 	}
@@ -1310,7 +1383,7 @@ func patchSourceXRefEntries(c context.Context, ctxSrc *model.Context, objNrs typ
 			}
 		}
 
-		patchObject(entry.Object, lookup)
+		entry.Object = patchObject(entry.Object, lookup)
 	}
 	return nil
 }
@@ -1324,7 +1397,7 @@ func remapSourceXRefTable(ctxSrc *model.Context, lookup map[int]int) {
 	ctxSrc.Table = m
 }
 
-func patchSourceCaches(c context.Context, ctxSrc *model.Context, lookup map[int]int) error {
+func patchSourceCaches(c context.Context, ctxSrc *model.Context, lookup, refs map[int]int) error {
 	if ctxSrc.Optimize == nil {
 		return errors.New("patch source object numbers: missing source optimization context")
 	}
@@ -1341,7 +1414,7 @@ func patchSourceCaches(c context.Context, ctxSrc *model.Context, lookup map[int]
 
 	// Patch cached name trees.
 	for id, v := range ctxSrc.Names {
-		if err := patchNameTree(c, v, lookup); err != nil {
+		if err := patchNameTree(c, v, refs); err != nil {
 			return fmt.Errorf("patch source object numbers: name tree %s: %w", id, err)
 		}
 	}
@@ -1361,21 +1434,52 @@ func patchSourceObjectNumbers(c context.Context, ctxSrc, ctxDest *model.Context)
 	objNrs := objNrsIntSet(ctxSrc)
 	lookup := lookupTable(objNrs, *ctxDest.Size)
 
+	// A reference to an object the source does not contain stays dangling, as in the input. It gets
+	// a fresh number after the renumbered objects, so it cannot name one of them. The fresh numbers
+	// are assigned in ascending order of the old numbers, so the output is reproducible. Each fresh
+	// number is registered below as an in-use entry without an object.
+	dangling, err := collectDanglingRefs(c, ctxSrc, objNrs, lookup)
+	if err != nil {
+		return err
+	}
+	danglingNrs := types.IntSet{}
+	for n := range dangling {
+		danglingNrs[n] = true
+	}
+	fresh := lookupTable(danglingNrs, *ctxDest.Size+len(lookup))
+	refs := maps.Clone(lookup)
+	maps.Copy(refs, fresh)
+
 	patchIndRef(ctxSrc.Root, lookup)
 	if ctxSrc.Info != nil {
-		patchIndRef(ctxSrc.Info, lookup)
+		if _, ok := lookup[int(ctxSrc.Info.ObjectNumber)]; ok {
+			patchIndRef(ctxSrc.Info, lookup)
+		} else {
+			// A stale Info number would free an unrelated destination object. The source Info is
+			// not carried over, so drop it.
+			ctxSrc.Info = nil
+		}
 	}
 
 	if err := patchFreeListHead(ctxSrc, lookup); err != nil {
 		return err
 	}
-	if err := patchSourceXRefEntries(c, ctxSrc, objNrs, lookup); err != nil {
+	if err := patchSourceXRefEntries(c, ctxSrc, objNrs, refs); err != nil {
 		return err
 	}
 	remapSourceXRefTable(ctxSrc, lookup)
-	if err := patchSourceCaches(c, ctxSrc, lookup); err != nil {
+	if err := patchSourceCaches(c, ctxSrc, lookup, refs); err != nil {
 		return err
 	}
+
+	// The writer writes an in-use entry without an object as a null object, with an xref entry of
+	// its own. A re-read then sees the number as in use, so a later merge does not assign it to
+	// another object. The entry takes the generation of the reference.
+	for n, i := range fresh {
+		gen := dangling[n]
+		ctxDest.Table[i] = &model.XRefTableEntry{Generation: &gen}
+	}
+	*ctxDest.Size += len(fresh)
 
 	if log.DebugEnabled() {
 		log.Debug.Printf("patchSourceObjectNumbers end")

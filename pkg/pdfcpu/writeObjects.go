@@ -860,6 +860,11 @@ func writeIndirectObject(c context.Context, ctx *model.Context, ir types.Indirec
 	objNr := int(ir.ObjectNumber)
 	genNr := int(ir.GenerationNumber)
 
+	// Object 0 is the head of the free list, not an object. A reference to it writes nothing.
+	if objNr == 0 {
+		return nil
+	}
+
 	if ctx.Write.HasWriteOffset(objNr) {
 		if log.WriteEnabled() {
 			log.Write.Printf("writeIndirectObject end: object #%d already written.\n", objNr)
@@ -878,6 +883,12 @@ func writeIndirectObject(c context.Context, ctx *model.Context, ir types.Indirec
 	}
 
 	if o == nil {
+
+		// The header takes the generation of the xref table entry, the one the xref
+		// records, whichever of several references to this object reaches the writer first.
+		if e, found := ctx.FindTableEntryLight(objNr); found && e.Generation != nil {
+			genNr = *e.Generation
+		}
 
 		if err = writeNullObject(ctx, objNr, genNr); err != nil {
 			return err
@@ -997,6 +1008,10 @@ func writeFlatObject(c context.Context, ctx *model.Context, objNr int) error {
 
 	o := e.Object
 	genNr := *e.Generation
+	if o == nil {
+		// An in-use entry without an object is an indirect reference to the null object.
+		return writeNullObject(ctx, objNr, genNr)
+	}
 	var err error
 
 	switch o := o.(type) {
