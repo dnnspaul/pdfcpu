@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pdfcpu/pdfcpu/internal/contextutil"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
@@ -103,8 +104,18 @@ func validateAppearanceEntry(c context.Context, xRefTable *model.XRefTable, d ty
 		return err
 	}
 
-	d.Delete(entryName)
-	model.ShowSkipped(fmt.Sprintf("corrupt appearance %s: %v", entryName, err))
+	if ctxErr := contextutil.Check(c); ctxErr != nil {
+		return ctxErr
+	}
+	// Keep the appearance: deleting it guarantees that the annotation is not
+	// drawn, keeping it leaves that to the viewer.
+	if ir, ok := o.(types.IndirectRef); ok {
+		err = model.WithValidationErrorObject(err, ir.ObjectNumber.Value())
+	}
+	err = fmt.Errorf("corrupt appearance %s: %w", entryName, err)
+	notice := model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err)
+	notice.Path = "AP/" + entryName
+	xRefTable.AddValidationNotice(notice)
 	return nil
 }
 
