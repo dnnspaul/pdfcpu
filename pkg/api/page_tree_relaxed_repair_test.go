@@ -177,8 +177,8 @@ func TestReadAndValidateRelaxedRepairedWriteAndMerge(t *testing.T) {
 			"<< /Type /Pages /Kids [4 0 R 5 0 R 6 0 R] /Count 3 >>",
 			"null", page, page, page, "null",
 		), 3, 5, 7), tolerant, 3},
-		{"negative kid", pageTreeNodePDF("-5 0 R 3 0 R", 1, page), tolerant, 1},
-		{"negative kid -1", pageTreeNodePDF("-1 0 R 3 0 R", 1, page), tolerant, 1},
+		{"negative kid", pageTreeNodePDF("-5 0 R 3 0 R", 1, page), tolerant, 2},
+		{"negative kid -1", pageTreeNodePDF("-1 0 R 3 0 R", 1, page), tolerant, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, err := ReadAndValidate(context.Background(), bytes.NewReader(tc.data), tc.conf)
@@ -276,7 +276,7 @@ func TestReadAndValidateRelaxedBlankKidGeneration(t *testing.T) {
 }
 
 // TestReadAndValidateStrictRejectsNegativeKid pins that strict validation keeps rejecting a negative
-// kid object number, which relaxed validation drops.
+// kid object number, which relaxed validation replaces with a blank page.
 func TestReadAndValidateStrictRejectsNegativeKid(t *testing.T) {
 	const page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>"
 	strict := model.NewDefaultConfiguration()

@@ -1384,10 +1384,11 @@ type blankPageKids map[int]int
 
 // detectPageNodeDict returns the page tree node that indRef refers to, and the
 // reference to use for it. In relaxed mode a missing node, or one that is an
-// empty dict, is replaced by a blank page. A number below Size is taken in
-// place: a free number is safe there, as the free list is rebuilt after the
-// walk. Any other number gets a new one, see newBlankPageObjNr, and the kid's
-// reference is rewritten to it.
+// empty dict, is replaced by a blank page. A number from 1 to below Size, within
+// MaxObjectNumber, is taken in place: a free number is safe there, as the free
+// list is rebuilt after the walk. Any other number, including a negative one or
+// one beyond MaxObjectNumber, gets a new one, see newBlankPageObjNr, and the
+// kid's reference is rewritten to it.
 func detectPageNodeDict(xRefTable *model.XRefTable, indRef types.IndirectRef, objNr, parentObjNr int, mediaBoxArr types.Array, pageNr int, blankKids blankPageKids) (types.IndirectRef, types.Dict, error) {
 	pageNodeDict, err := xRefTable.DereferenceDict(indRef)
 	if err != nil {
@@ -1415,7 +1416,8 @@ func detectPageNodeDict(xRefTable *model.XRefTable, indRef types.IndirectRef, ob
 	// storeBlankPage writes generation 0, so the Kids entry must reference
 	// generation 0 too, whatever generation the missing kid named.
 	blankRef := *types.NewIndirectRef(objNr, 0)
-	if objNr >= *xRefTable.Size {
+	if objNr < 0 || objNr >= *xRefTable.Size ||
+		xRefTable.Conf != nil && xRefTable.Conf.Limits.CheckObjectNumber(int64(objNr)) != nil {
 		n, err := newBlankPageObjNr(xRefTable)
 		if err != nil {
 			return indRef, nil, model.WithValidationErrorObject(err, objNr)
@@ -1429,6 +1431,12 @@ func detectPageNodeDict(xRefTable *model.XRefTable, indRef types.IndirectRef, ob
 	}
 
 	model.ShowRepaired(fmt.Sprintf("corrupt page %d with blank page", pageNr))
+	cause := fmt.Errorf("page tree: page %d: kid obj#%d: %w", pageNr, objNr, model.ErrMissingPageKid)
+	notice := model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeRepaired,
+		cause.Error()+", replaced by a blank page", cause)
+	notice.ObjectNumber = parentObjNr
+	notice.PageNumber = pageNr
+	xRefTable.AddValidationNotice(notice)
 
 	pageNodeDict, err = xRefTable.DereferenceDict(blankRef)
 	if err != nil {
@@ -1470,7 +1478,7 @@ func pageTreeNodeEntryError(err error, objNr int, entryName string) error {
 
 // newBlankPageObjNr returns the first object number at or after Size that no
 // entry uses, and moves Size past it. Relaxed validation gives a blank page for
-// a kid at or beyond Size a number from here. Size then covers the page, and no
+// a kid that cannot be taken in place a number from here. Size then covers the page, and no
 // number from the free list is taken, which matters because the free list is
 // only rebuilt after the page tree walk. A number beyond
 // ResourceLimits.MaxObjectNumber is an error.
@@ -1530,15 +1538,11 @@ func processPagesKids(c context.Context, xRefTable *model.XRefTable, kids types.
 		}
 
 		objNr := ir.ObjectNumber.Value()
-		// Object 0 is skipped in both modes; relaxed mode also drops a negative
-		// object number, which strict mode keeps rejecting.
-		if objNr == 0 || objNr < 0 && xRefTable.ValidationMode == model.ValidationRelaxed {
-			continue
-		}
-		// Relaxed mode drops a kid beyond MaxObjectNumber like a null kid, as the
-		// page tree walk does.
-		if xRefTable.ValidationMode == model.ValidationRelaxed && xRefTable.Conf != nil &&
-			xRefTable.Conf.Limits.CheckObjectNumber(int64(objNr)) != nil {
+		// Object 0 is skipped in both modes. A negative object number or one
+		// beyond MaxObjectNumber names no object: relaxed mode gives it a blank
+		// page like any missing kid, see detectPageNodeDict, and strict mode
+		// rejects it as a corrupt page.
+		if objNr == 0 {
 			continue
 		}
 		// A kid repaired earlier in this run refers to its blank page.

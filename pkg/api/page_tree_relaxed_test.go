@@ -101,6 +101,8 @@ func TestReadPageBoundariesRelaxedPageTree(t *testing.T) {
 		{"blank under declared subtree", failureTestPDF("<< /Type /Catalog /Pages 2 0 R >>",
 			"<< /Type /Pages /Kids [4 0 R] /Count 1 >>", page,
 			"<< /Type /Pages /Parent 2 0 R /MediaBox [0 0 100 200] /Kids [9 0 R 3 0 R] /Count 2 >>"), 2},
+		{"negative kid", failureTestPDF("<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R -5 0 R] /Count 2 >>", page), 2},
+		{"kid beyond object number limit", failureTestPDF("<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [8388608 0 R 3 0 R] /Count 2 >>", page), 2},
 		{"unparsable MediaBox coordinates", failureTestPDF("<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
 			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1e30 1e30] >>"), 1},
 	} {
@@ -340,7 +342,7 @@ func relaxedRoundTrip(t *testing.T, ctx *model.Context) *model.Context {
 
 // TestReadAndValidateRelaxedKidsRoundTrip pins that a repaired page tree with kids at the object
 // number limit writes a file that reads back with the same pages and boundaries, and with a positive
-// Size. A kid beyond ResourceLimits.MaxObjectNumber is dropped as a null kid is.
+// Size. A kid beyond ResourceLimits.MaxObjectNumber gets a blank page like a missing kid.
 func TestReadAndValidateRelaxedKidsRoundTrip(t *testing.T) {
 	const limit = 8_388_607
 	for _, tc := range []struct {
@@ -350,8 +352,8 @@ func TestReadAndValidateRelaxedKidsRoundTrip(t *testing.T) {
 	}{
 		{"kid at object number limit", "3 0 R 8388607 0 R", 2},
 		{"kid at object number limit first", "8388606 0 R 3 0 R", 2},
-		{"kid beyond object number limit", "3 0 R 9223372036854775807 0 R", 1},
-		{"kid beyond object number limit first", "2147483647 0 R 3 0 R", 1},
+		{"kid beyond object number limit", "3 0 R 9223372036854775807 0 R", 2},
+		{"kid beyond object number limit first", "2147483647 0 R 3 0 R", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data := pageTreeKidsPDF(tc.kids)
@@ -571,4 +573,125 @@ func TestReadAndValidateRelaxedMaxInt64KidUnlimited(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(pbs, want) {
 		t.Fatalf("ReadPageBoundaries %+v, %v; validation %+v", pbs, err, want)
 	}
+}
+
+// TestReadAndValidateRelaxedBlankPageNotices pins that every blank page of a repaired page tree records one repaired
+// notice with its page number, and that null kids and references to object 0 record none.
+func TestReadAndValidateRelaxedBlankPageNotices(t *testing.T) {
+	data := failureTestPDF("<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R 99 0 R -7 0 R 0 0 R null 8388608 0 R 4 0 R] /Count 7 /MediaBox [0 0 200 200] >>",
+		"<< /Type /Page /Parent 2 0 R >>",
+		"<< >>")
+	ctx, _, err := ReadAndValidateWithReport(context.Background(), bytes.NewReader(data), nil)
+	if err != nil {
+		t.Fatalf("relaxed read: %v", err)
+	}
+	if ctx.PageCount != 5 {
+		t.Fatalf("got %d pages, want 5", ctx.PageCount)
+	}
+
+	var blank []model.ValidationNotice
+	for _, n := range ctx.ValidationReport().Notices() {
+		if errors.Is(n.Cause, model.ErrMissingPageKid) {
+			blank = append(blank, n)
+		}
+	}
+	if len(blank) != 4 {
+		t.Fatalf("got %d blank page notices, want 4: %v", len(blank), blank)
+	}
+	for i, n := range blank {
+		if n.Disposition != model.NoticeRepaired || n.ObjectNumber != 2 || n.PageNumber != i+2 {
+			t.Fatalf("notice %d: disposition %q, object %d, page %d; want repaired, object 2, page %d",
+				i, n.Disposition, n.ObjectNumber, n.PageNumber, i+2)
+		}
+	}
+	if want := "page tree: page 2: kid obj#99: missing page tree kid, replaced by a blank page"; blank[0].Message != want {
+		t.Fatalf("first message %q, want %q", blank[0].Message, want)
+	}
+	if !strings.Contains(blank[1].Message, "kid obj#-7:") {
+		t.Fatalf("second message %q does not name obj#-7", blank[1].Message)
+	}
+
+	pbs, err := ReadPageBoundaries(context.Background(), bytes.NewReader(data), nil, nil)
+	if err != nil {
+		t.Fatalf("page boundaries: %v", err)
+	}
+	want, err := ctx.XRefTable.PageBoundaries(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("validated page boundaries: %v", err)
+	}
+	if !reflect.DeepEqual(pbs, want) {
+		t.Fatalf("page boundaries %v, want %v", pbs, want)
+	}
+	for i := 1; i < len(pbs); i++ {
+		if r := pbs[i].Media.Rect; r.Width() != 200 || r.Height() != 200 {
+			t.Fatalf("blank page %d MediaBox %v, want [0 0 200 200]", i+1, r)
+		}
+	}
+
+	back := relaxedRoundTrip(t, ctx)
+	if back.PageCount != 5 {
+		t.Fatalf("round trip: got %d pages, want 5", back.PageCount)
+	}
+	for _, n := range back.ValidationReport().Notices() {
+		if errors.Is(n.Cause, model.ErrMissingPageKid) {
+			t.Fatalf("round trip: blank page notice %q, want none", n.Message)
+		}
+	}
+}
+
+// TestReadAndValidateRelaxedBlankPageLimits pins that the limits bound the blank pages of a repaired page tree: a
+// blank page beyond MaxObjectNumber is a resource limit error, and MaxPageCount stops a tree of many bogus kids.
+func TestReadAndValidateRelaxedBlankPageLimits(t *testing.T) {
+	catalog := "<< /Type /Catalog /Pages 2 0 R >>"
+
+	t.Run("object number limit", func(t *testing.T) {
+		conf := model.NewTolerantConfiguration()
+		conf.Limits.MaxObjectNumber = 4
+		data := failureTestPDF(catalog, "<< /Type /Pages /Kids [3 0 R -1 0 R] /Count 2 >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>", "null")
+		_, err := ReadAndValidate(context.Background(), bytes.NewReader(data), conf)
+		var limitErr *model.ResourceLimitError
+		if !errors.As(err, &limitErr) || limitErr.Kind != model.LimitObjectNumber || limitErr.Limit != 4 || limitErr.Value != 5 {
+			t.Fatalf("got %v, want a LimitObjectNumber error with limit 4 and value 5", err)
+		}
+		if errors.Is(err, ErrInvalidPDF) {
+			t.Fatalf("limit classified as invalid input: %v", err)
+		}
+	})
+
+	t.Run("page count limit", func(t *testing.T) {
+		conf := model.NewTolerantConfiguration()
+		conf.Limits.MaxPageCount = 100
+		kids := func(n int) string {
+			var b strings.Builder
+			for i := 1; i <= n; i++ {
+				fmt.Fprintf(&b, "-%d 0 R ", i)
+			}
+			return b.String()
+		}
+		pagesNode := func(n int) []byte {
+			return failureTestPDF(catalog,
+				fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d /MediaBox [0 0 1 1] >>", kids(n), n))
+		}
+
+		over := pagesNode(101)
+		_, err := ReadAndValidate(context.Background(), bytes.NewReader(over), conf)
+		var limitErr *model.ResourceLimitError
+		if !errors.As(err, &limitErr) || limitErr.Kind != model.LimitPages || limitErr.Limit != 100 || limitErr.Value != 101 {
+			t.Fatalf("validation: got %v, want a LimitPages error with limit 100 and value 101", err)
+		}
+		_, err = ReadPageBoundaries(context.Background(), bytes.NewReader(over), nil, conf)
+		if !errors.As(err, &limitErr) || limitErr.Kind != model.LimitPages || limitErr.Limit != 100 || limitErr.Value != 101 {
+			t.Fatalf("page boundaries: got %v, want a LimitPages error with limit 100 and value 101", err)
+		}
+
+		ctx, err := ReadAndValidate(context.Background(), bytes.NewReader(pagesNode(100)), conf)
+		if err != nil {
+			t.Fatalf("100 kids: %v", err)
+		}
+		if ctx.PageCount != 100 || *ctx.Size != 103 {
+			t.Fatalf("100 kids: page count %d, size %d; want 100 and 103", ctx.PageCount, *ctx.Size)
+		}
+	})
 }

@@ -3096,18 +3096,27 @@ func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d types.Dict, inhMediaBox,
 	return mediaBox, cropBox, nil
 }
 
+// ErrMissingPageKid signals a page tree kid that refers to no page object: a
+// missing, free or null object, an empty dict, a negative object number or one
+// beyond ResourceLimits.MaxObjectNumber. Relaxed validation replaces such a kid
+// with a blank page and records a repaired notice with this cause.
+var ErrMissingPageKid = errors.New("missing page tree kid")
+
 // relaxedPageTreeKid reports how relaxed validation treats the Kids entry
-// indRef: an entry for object 0, for a negative object number or for an object
-// number beyond ResourceLimits.MaxObjectNumber is dropped (skip), and an entry
-// for a missing, free or null object or an empty dict is replaced by a blank
+// indRef: an entry for object 0 is dropped (skip), and an entry for a negative
+// object number, for an object number beyond ResourceLimits.MaxObjectNumber,
+// or for a missing, free or null object or an empty dict is replaced by a blank
 // page (blank). In strict mode both are false.
 func (xRefTable *XRefTable) relaxedPageTreeKid(indRef types.IndirectRef) (skip, blank bool) {
 	if xRefTable.ValidationMode != ValidationRelaxed {
 		return false, false
 	}
 	objNr := indRef.ObjectNumber.Value()
-	if objNr <= 0 || xRefTable.Conf != nil && xRefTable.Conf.Limits.CheckObjectNumber(int64(objNr)) != nil {
+	if objNr == 0 {
 		return true, false
+	}
+	if objNr < 0 || xRefTable.Conf != nil && xRefTable.Conf.Limits.CheckObjectNumber(int64(objNr)) != nil {
+		return false, true
 	}
 	d, err := xRefTable.DereferenceDict(indRef)
 	return false, err == nil && len(d) == 0
@@ -3465,10 +3474,10 @@ func (xRefTable *XRefTable) countPageTreeLeaves(
 // CountPageTreeLeaves rejects null entries in Kids, entries that do not refer
 // to a page tree node and more pages than the cross-reference table has
 // entries. In relaxed mode it counts the pages relaxed validation keeps: it
-// skips null entries, references to object 0, negative object numbers and
-// references beyond ResourceLimits.MaxObjectNumber, and counts a reference to a
-// missing, free or null object or to an empty dict as the blank page validation
-// puts in its place. With ResourceLimits.MaxPageCount set, the cross-reference
+// skips null entries and references to object 0, and counts a reference to a
+// missing, free or null object, to an empty dict, to a negative object number
+// or beyond ResourceLimits.MaxObjectNumber as the blank page validation puts in
+// its place. With ResourceLimits.MaxPageCount set, the cross-reference
 // table size does not limit relaxed mode and MaxPageCount is the only bound.
 // Without it, relaxed mode keeps the table size as the bound, so the pages of
 // a compressed page tree stay bounded by the objects of the PDF. PageBoundaries

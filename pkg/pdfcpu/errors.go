@@ -47,6 +47,9 @@ var (
 	// ErrMissingAnnotationAppearance signals a PDF 2.0 annotation without its required appearance dictionary.
 	ErrMissingAnnotationAppearance = model.ErrMissingAnnotationAppearance
 
+	// ErrMissingPageKid signals a page tree kid that relaxed validation replaced with a blank page.
+	ErrMissingPageKid = model.ErrMissingPageKid
+
 	// ErrMissingContext signals a missing required Go context.
 	ErrMissingContext = model.ErrMissingContext
 

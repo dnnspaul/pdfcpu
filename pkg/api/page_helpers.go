@@ -39,9 +39,9 @@ import (
 // validation: no catalog, structure tree, annotation, form, resource or
 // content checks. In relaxed mode the page tree walk accepts some page tree
 // defects that relaxed validation repairs, and counts pages as validation
-// does: null entries in Kids, references to object 0, negative object numbers
-// and references beyond conf.Limits.MaxObjectNumber are skipped, a reference to
-// a missing, free or null object or to an empty dict is a blank page with the
+// does: null entries in Kids and references to object 0 are skipped, a
+// reference to a missing, free or null object, to an empty dict, to a negative
+// object number or beyond conf.Limits.MaxObjectNumber is a blank page with the
 // MediaBox that validation gives it or A4, a page listed more than once in Kids
 // counts each time, and a null page boundary coordinate is 0. Without a
 // MaxPageCount, relaxed mode keeps the cap of one page per cross-reference

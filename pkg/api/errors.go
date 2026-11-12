@@ -142,6 +142,9 @@ var (
 	// ErrMissingAnnotationAppearance signals a PDF 2.0 annotation without its required appearance dictionary.
 	ErrMissingAnnotationAppearance = pdfcpu.ErrMissingAnnotationAppearance
 
+	// ErrMissingPageKid signals a page tree kid that relaxed validation replaced with a blank page.
+	ErrMissingPageKid = pdfcpu.ErrMissingPageKid
+
 	// ErrMissingBookletConfiguration signals a missing booklet configuration.
 	ErrMissingBookletConfiguration = errors.New("missing booklet configuration")
 
