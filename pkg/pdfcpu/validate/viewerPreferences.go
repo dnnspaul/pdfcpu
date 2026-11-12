@@ -30,6 +30,10 @@ func validateDirection(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int,
 	}
 
 	n, err := validateNameEntry(xRefTable, d, ownerObjNr, dictName, "Direction", OPTIONAL, model.V13, validate)
+	digested, err := digestUnknownNameEntry(xRefTable, dictName+".Direction", n, err)
+	if digested {
+		return nil
+	}
 	if err != nil {
 		if xRefTable.ValidationMode == model.ValidationStrict {
 			return fmt.Errorf("%s.Direction: %w", dictName, err)
@@ -57,34 +61,38 @@ func validatePageBoundaries(xRefTable *model.XRefTable, d types.Dict, ownerObjNr
 	}
 
 	n, err := validateNameEntry(xRefTable, d, ownerObjNr, dictName, "ViewArea", OPTIONAL, model.V14, validate)
+	digested, err := digestUnknownNameEntry(xRefTable, dictName+".ViewArea", n, err)
 	if err != nil {
 		return fmt.Errorf("%s.ViewArea: %w", dictName, err)
 	}
-	if n != nil {
+	if n != nil && !digested {
 		vp.ViewArea = model.PageBoundaryFor(n.String())
 	}
 
 	n, err = validateNameEntry(xRefTable, d, ownerObjNr, dictName, "PrintArea", OPTIONAL, model.V14, validate)
+	digested, err = digestUnknownNameEntry(xRefTable, dictName+".PrintArea", n, err)
 	if err != nil {
 		return fmt.Errorf("%s.PrintArea: %w", dictName, err)
 	}
-	if n != nil {
+	if n != nil && !digested {
 		vp.PrintArea = model.PageBoundaryFor(n.String())
 	}
 
 	n, err = validateNameEntry(xRefTable, d, ownerObjNr, dictName, "ViewClip", OPTIONAL, model.V14, validate)
+	digested, err = digestUnknownNameEntry(xRefTable, dictName+".ViewClip", n, err)
 	if err != nil {
 		return fmt.Errorf("%s.ViewClip: %w", dictName, err)
 	}
-	if n != nil {
+	if n != nil && !digested {
 		vp.ViewClip = model.PageBoundaryFor(n.String())
 	}
 
 	n, err = validateNameEntry(xRefTable, d, ownerObjNr, dictName, "PrintClip", OPTIONAL, model.V14, validate)
+	digested, err = digestUnknownNameEntry(xRefTable, dictName+".PrintClip", n, err)
 	if err != nil {
 		return fmt.Errorf("%s.PrintClip: %w", dictName, err)
 	}
-	if n != nil {
+	if n != nil && !digested {
 		vp.PrintClip = model.PageBoundaryFor(n.String())
 	}
 
@@ -172,7 +180,9 @@ func validatePrinterPreferences(xRefTable *model.XRefTable, d types.Dict, ownerO
 		}
 		// Ignore in relaxed mode.
 	}
-	if n != nil {
+	// Relaxed mode keeps a name with a version or value error in the dict only. The
+	// model takes its value from a name that validated.
+	if err == nil && n != nil {
 		vp.PrintScaling = model.PrintScalingFor(n.String())
 	}
 
@@ -184,10 +194,11 @@ func validatePrinterPreferences(xRefTable *model.XRefTable, d types.Dict, ownerO
 		sinceVersion = model.V14
 	}
 	n, err = validateNameEntry(xRefTable, d, ownerObjNr, dictName, "Duplex", OPTIONAL, sinceVersion, validate)
+	digested, err := digestUnknownNameEntry(xRefTable, dictName+".Duplex", n, err)
 	if err != nil {
 		return fmt.Errorf("%s.Duplex: %w", dictName, err)
 	}
-	if n != nil {
+	if n != nil && !digested {
 		vp.Duplex = model.PaperHandlingFor(n.String())
 	}
 
@@ -327,10 +338,11 @@ func validateViewerPreferences(xRefTable *model.XRefTable, rootDict types.Dict, 
 	n, err := validateNameEntry(
 		xRefTable, d, preferencesObjNr, dictName, "NonFullScreenPageMode", OPTIONAL, model.V10, validate,
 	)
+	digested, err := digestUnknownNameEntry(xRefTable, dictName+".NonFullScreenPageMode", n, err)
 	if err != nil {
 		return fmt.Errorf("%s.NonFullScreenPageMode: %w", dictName, err)
 	}
-	if n != nil {
+	if n != nil && !digested {
 		vp.NonFullScreenPageMode = (*model.NonFullScreenPageMode)(model.PageModeFor(n.String()))
 	}
 

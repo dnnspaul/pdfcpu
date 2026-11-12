@@ -731,6 +731,22 @@ func validateNameForObject(xRefTable *model.XRefTable, o types.Object, ownerObjN
 	return &name, nil
 }
 
+// digestUnknownNameEntry handles the result n, err of validateNameEntry for the
+// optional, purely presentational name entry at path.
+// If validate rejected the value (n and err are both set) and the validation mode is
+// relaxed, it keeps the entry unchanged, so that a written file has the same value,
+// and records a digested notice for path. It returns true and nil.
+// Otherwise it returns false and err unchanged.
+func digestUnknownNameEntry(xRefTable *model.XRefTable, path string, n *types.Name, err error) (bool, error) {
+	if err == nil || n == nil || xRefTable.ValidationMode != model.ValidationRelaxed {
+		return false, err
+	}
+	notice := model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err)
+	notice.Path = path
+	xRefTable.AddValidationNotice(notice)
+	return true, nil
+}
+
 func validateNameEntry(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, dictName, entryName string, required bool, sinceVersion model.Version, validate func(string) bool) (*types.Name, error) {
 	if log.ValidateEnabled() {
 		log.Validate.Printf("validateNameEntry begin: entry=%s\n", entryName)
@@ -759,6 +775,11 @@ func validateNameEntry(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int,
 
 	// Version check
 	if err = xRefTable.ValidateVersion("dict="+dictName+" entry="+entryName, sinceVersion); err != nil {
+		// A name is returned with the error, as for an invalid value below, so that
+		// relaxed callers can keep it, see digestUnknownNameEntry.
+		if name, ok := o.(types.Name); ok {
+			return &name, model.WithValidationErrorObject(err, objNr)
+		}
 		return nil, model.WithValidationErrorObject(err, objNr)
 	}
 

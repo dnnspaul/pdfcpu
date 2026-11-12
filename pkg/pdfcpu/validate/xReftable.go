@@ -530,7 +530,7 @@ func validatePageLayout(xRefTable *model.XRefTable, rootDict types.Dict, require
 		xRefTable, rootDict, validationRootObjectNumber(xRefTable), "rootDict", "PageLayout", required, sinceVersion,
 		pageLayoutValidator(xRefTable.Version()),
 	)
-	if err != nil {
+	if digested, err := digestUnknownNameEntry(xRefTable, "PageLayout", n, err); digested || err != nil {
 		return err
 	}
 
@@ -571,7 +571,11 @@ func validatePageMode(xRefTable *model.XRefTable, rootDict types.Dict, required 
 		}
 		// Relax validation of "UseAttachments" before PDF v1.6.
 		if *n != "UseAttachments" {
-			return err
+			if _, err := digestUnknownNameEntry(xRefTable, "PageMode", n, err); err != nil {
+				return err
+			}
+			xRefTable.PageMode = model.PageModeFor("UseNone")
+			return nil
 		}
 	}
 
