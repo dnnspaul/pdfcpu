@@ -464,34 +464,70 @@ func TestMergeContexts(t *testing.T) {
 	}
 }
 
-func TestMergeRawWithReportStructTreeRemoved(t *testing.T) {
+func TestMergeRawWithReportStructTreeInvalid(t *testing.T) {
 	broken := failureTestStructTreePDF(3, "<< /Kids [99 0 R] >>")
 	simple := mergeTestPDF(1, false)
 
 	for pos, inputs := range [][][]byte{{broken, simple}, {simple, broken}} {
 		t.Run(fmt.Sprintf("broken-at-%d", pos), func(t *testing.T) {
+			// Kept by the tolerant configuration: the output keeps the tree of the first input only.
 			var out bytes.Buffer
 			report, err := MergeRawWithReport(context.Background(), mergeTestReaders(inputs...), &out, nil, MergeOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !report.Inputs[pos].StructTreeRemoved {
-				t.Fatalf("input %d: StructTreeRemoved is false", pos)
+			if !report.Inputs[pos].StructTreeInvalid || report.Inputs[pos].StructTreeRemoved {
+				t.Fatalf("input %d: StructTreeInvalid %t, StructTreeRemoved %t, want true and false",
+					pos, report.Inputs[pos].StructTreeInvalid, report.Inputs[pos].StructTreeRemoved)
 			}
-			ctx := requireMergedPDF(t, out.Bytes(), 2, 0, false)
+			// The default configuration rejects the kept tree, so read the output tolerantly.
+			ctx, rereadReport, err := ReadAndValidateWithReport(context.Background(), bytes.NewReader(out.Bytes()), nil)
+			if err != nil {
+				t.Fatalf("tolerant re-read: %v", err)
+			}
+			if ctx.PageCount != 2 {
+				t.Fatalf("page count %d, want 2", ctx.PageCount)
+			}
+			root, err := ctx.Catalog()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, hasTree := root["StructTreeRoot"]
+			if pos == 0 && (!hasTree || !rereadReport.StructTreeInvalid) {
+				t.Fatalf("pos 0: tree kept %t, re-read invalid %t, want both true", hasTree, rereadReport.StructTreeInvalid)
+			}
+			if pos == 1 && hasTree {
+				t.Fatal("pos 1: output has a StructTreeRoot, want the first input's catalog only")
+			}
+
+			// Removal, as the configuration asked before KeepInvalidStructTree existed.
+			removeConf := model.NewTolerantConfiguration()
+			removeConf.KeepInvalidStructTree = false
+			removeConf.RemoveInvalidStructTree = true
+			var removed bytes.Buffer
+			report, err = MergeRawWithReport(context.Background(), mergeTestReaders(inputs...), &removed, removeConf, MergeOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !report.Inputs[pos].StructTreeInvalid || !report.Inputs[pos].StructTreeRemoved {
+				t.Fatalf("remove: input %d: StructTreeInvalid %t, StructTreeRemoved %t, want both true",
+					pos, report.Inputs[pos].StructTreeInvalid, report.Inputs[pos].StructTreeRemoved)
+			}
+			removedCtx := requireMergedPDF(t, removed.Bytes(), 2, 0, false)
 			if pos == 0 {
-				root, err := ctx.Catalog()
+				removedRoot, err := removedCtx.Catalog()
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, ok := root["StructTreeRoot"]; ok {
+				if _, ok := removedRoot["StructTreeRoot"]; ok {
 					t.Fatal("output catalog keeps the removed StructTreeRoot")
 				}
 			}
 
-			conf := model.NewTolerantConfiguration()
-			conf.RemoveInvalidStructTree = false
-			_, err = MergeRawWithReport(context.Background(), mergeTestReaders(inputs...), io.Discard, conf, MergeOptions{})
+			failConf := model.NewTolerantConfiguration()
+			failConf.KeepInvalidStructTree = false
+			failConf.RemoveInvalidStructTree = false
+			_, err = MergeRawWithReport(context.Background(), mergeTestReaders(inputs...), io.Discard, failConf, MergeOptions{})
 			requireMergeInputError(t, err, pos, model.ErrInvalidStructTree)
 		})
 	}

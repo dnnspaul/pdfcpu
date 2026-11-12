@@ -22,10 +22,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
 // structTreeChainPDF builds a catalog whose StructTreeRoot reaches n structure elements through
@@ -116,6 +118,20 @@ func structTreeDeepPDF(n int, lastBody string) []byte {
 func structTreeRelaxedConfiguration(remove bool) *model.Configuration {
 	conf := model.NewDefaultConfiguration()
 	conf.RemoveInvalidStructTree = remove
+	return conf
+}
+
+// structTreeKeepConfiguration returns the default configuration with KeepInvalidStructTree set.
+func structTreeKeepConfiguration() *model.Configuration {
+	conf := model.NewDefaultConfiguration()
+	conf.KeepInvalidStructTree = true
+	return conf
+}
+
+// structTreeRemoveConfiguration is structTreeRelaxedConfiguration(true), with the tree kept if keep is set.
+func structTreeRemoveConfiguration(keep bool) *model.Configuration {
+	conf := structTreeRelaxedConfiguration(true)
+	conf.KeepInvalidStructTree = keep
 	return conf
 }
 
@@ -350,6 +366,14 @@ func TestRemoveInvalidStructTree(t *testing.T) {
 
 // TestRemoveInvalidStructTreeMixedDefect verifies a removed tree does not hide a failure elsewhere.
 func TestRemoveInvalidStructTreeMixedDefect(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
+			removeInvalidStructTreeMixedDefect(t, keep)
+		})
+	}
+}
+
+func removeInvalidStructTreeMixedDefect(t *testing.T, keep bool) {
 	// relaxedFatalAnnot is an annotation defect that fails validation in relaxed mode.
 	const relaxedFatalAnnot = "<< /Type /Annot /Subtype /Link /Rect 5 >>"
 	mixed := func(parentTree string) []byte {
@@ -363,11 +387,11 @@ func TestRemoveInvalidStructTreeMixedDefect(t *testing.T) {
 			relaxedFatalAnnot,
 		)
 	}
-	if _, err := ReadAndValidate(context.Background(), bytes.NewReader(mixed("<< /Nums [] >>")), structTreeRelaxedConfiguration(true)); err == nil {
+	if _, err := ReadAndValidate(context.Background(), bytes.NewReader(mixed("<< /Nums [] >>")), structTreeRemoveConfiguration(keep)); err == nil {
 		t.Fatal("annotation alone: got no error, choose another relaxed-fatal annotation defect")
 	}
 
-	_, err := ReadAndValidate(context.Background(), bytes.NewReader(mixed("<< /Kids [99 0 R] >>")), structTreeRelaxedConfiguration(true))
+	_, err := ReadAndValidate(context.Background(), bytes.NewReader(mixed("<< /Kids [99 0 R] >>")), structTreeRemoveConfiguration(keep))
 	if !errors.Is(err, ErrInvalidPDF) {
 		t.Fatalf("got %v, want ErrInvalidPDF", err)
 	}
@@ -381,8 +405,16 @@ func TestRemoveInvalidStructTreeMixedDefect(t *testing.T) {
 
 // TestRemoveInvalidStructTreeDeadline verifies a deadline hit at any point is never reported as invalid input.
 func TestRemoveInvalidStructTreeDeadline(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
+			removeInvalidStructTreeDeadline(t, keep)
+		})
+	}
+}
+
+func removeInvalidStructTreeDeadline(t *testing.T, keep bool) {
 	data := failureTestStructTreePDF(50, "<< /Kids [99 0 R] >>")
-	conf := structTreeRelaxedConfiguration(true)
+	conf := structTreeRemoveConfiguration(keep)
 	structTreeMessages := 0
 	for checks := 0; ; checks++ {
 		if checks > 100000 {
@@ -391,8 +423,9 @@ func TestRemoveInvalidStructTreeDeadline(t *testing.T) {
 		c := &deadlineAfterChecksContext{Context: context.Background(), checks: checks}
 		ctx, err := ReadAndValidate(c, bytes.NewReader(data), conf)
 		if err == nil {
-			if !ctx.XRefTable.StructTreeRemoved {
-				t.Fatalf("checks %d: validation completed without removing the tree", checks)
+			if !ctx.XRefTable.StructTreeInvalid || ctx.XRefTable.StructTreeRemoved != !keep {
+				t.Fatalf("checks %d: validation completed with invalid %t and removed %t",
+					checks, ctx.XRefTable.StructTreeInvalid, ctx.XRefTable.StructTreeRemoved)
 			}
 			break
 		}
@@ -413,8 +446,16 @@ func TestRemoveInvalidStructTreeDeadline(t *testing.T) {
 
 // TestRemoveInvalidStructTreeContextCancelIsNotRemoved verifies a cancellation inside the tree stays a context error.
 func TestRemoveInvalidStructTreeContextCancelIsNotRemoved(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
+			removeInvalidStructTreeContextCancelIsNotRemoved(t, keep)
+		})
+	}
+}
+
+func removeInvalidStructTreeContextCancelIsNotRemoved(t *testing.T, keep bool) {
 	cause := errors.New("caller stopped")
-	_, err := ReadAndValidate(failureTestCanceledContext(cause), bytes.NewReader(structTreeMissingKidsPDF()), structTreeRelaxedConfiguration(true))
+	_, err := ReadAndValidate(failureTestCanceledContext(cause), bytes.NewReader(structTreeMissingKidsPDF()), structTreeRemoveConfiguration(keep))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v, want context.Canceled", err)
 	}
@@ -427,6 +468,14 @@ func TestRemoveInvalidStructTreeContextCancelIsNotRemoved(t *testing.T) {
 // it does not change the outcome of reads that fail. Reads of the structure tree objects fail in the read phase,
 // so no API input reaches the ReaderErr guard in removeInvalidStructTree; that guard is defensive.
 func TestRemoveInvalidStructTreeReaderFailure(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
+			removeInvalidStructTreeReaderFailure(t, keep)
+		})
+	}
+}
+
+func removeInvalidStructTreeReaderFailure(t *testing.T, keep bool) {
 	data := failureTestStructTreePDF(3, "<< /Nums [] >>")
 	readErr := errors.New("connection reset by peer")
 	reached := 0
@@ -435,9 +484,9 @@ func TestRemoveInvalidStructTreeReaderFailure(t *testing.T) {
 			return &badRangeReader{Reader: bytes.NewReader(data), lo: int64(lo), hi: int64(lo) + 8, err: readErr}
 		}
 		_, errOff := ReadAndValidate(context.Background(), read(), structTreeRelaxedConfiguration(false))
-		ctxOn, errOn := ReadAndValidate(context.Background(), read(), structTreeRelaxedConfiguration(true))
-		if errOn == nil && ctxOn.XRefTable.StructTreeRemoved {
-			t.Fatalf("offset %d: reader failure removed the structure tree", lo)
+		ctxOn, errOn := ReadAndValidate(context.Background(), read(), structTreeRemoveConfiguration(keep))
+		if errOn == nil && ctxOn.XRefTable.StructTreeInvalid {
+			t.Fatalf("offset %d: reader failure tolerated the structure tree", lo)
 		}
 		if fmt.Sprint(errOn) != fmt.Sprint(errOff) {
 			t.Fatalf("offset %d: flag changed the outcome: got %v, want %v", lo, errOn, errOff)
@@ -453,6 +502,14 @@ func TestRemoveInvalidStructTreeReaderFailure(t *testing.T) {
 
 // TestRemoveInvalidStructTreeNoticeLimit verifies a notice limit inside the tree stays a resource limit.
 func TestRemoveInvalidStructTreeNoticeLimit(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
+			removeInvalidStructTreeNoticeLimit(t, keep)
+		})
+	}
+}
+
+func removeInvalidStructTreeNoticeLimit(t *testing.T, keep bool) {
 	data := failureTestPDF(
 		"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -466,7 +523,7 @@ func TestRemoveInvalidStructTreeNoticeLimit(t *testing.T) {
 		"<< /Type /StructElem /S /P /P 4 0 R /Pg 3 0 R /K [11 0 R] >>",
 		"<< /Type /StructElem /S /P /P 4 0 R /Pg 3 0 R /K [10 0 R] >>",
 	)
-	conf := structTreeRelaxedConfiguration(true)
+	conf := structTreeRemoveConfiguration(keep)
 	conf.Limits.MaxNotices = 2
 	_, err := ReadAndValidate(context.Background(), bytes.NewReader(data), conf)
 	if !errors.Is(err, model.ErrResourceLimit) {
@@ -483,8 +540,16 @@ func TestRemoveInvalidStructTreeNoticeLimit(t *testing.T) {
 
 // TestRemoveInvalidStructTreeFlagSurvivesCap verifies the removal flag is kept when notices are capped.
 func TestRemoveInvalidStructTreeFlagSurvivesCap(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keep=%t", keep), func(t *testing.T) {
+			removeInvalidStructTreeFlagSurvivesCap(t, keep)
+		})
+	}
+}
+
+func removeInvalidStructTreeFlagSurvivesCap(t *testing.T, keep bool) {
 	data := structTreeChainPDF(2, false, false, true, "<< /Kids [99 0 R] >>", "")
-	conf := structTreeRelaxedConfiguration(true)
+	conf := structTreeRemoveConfiguration(keep)
 	conf.Limits.MaxRetainedNotices = 1
 	ctx, err := ReadAndValidate(context.Background(), bytes.NewReader(data), conf)
 	if err != nil {
@@ -497,8 +562,8 @@ func TestRemoveInvalidStructTreeFlagSurvivesCap(t *testing.T) {
 	if cause := report.Notices()[0].Cause; !errors.Is(cause, model.ErrStructureTreeCycle) {
 		t.Fatalf("stored notice is %v, want the cycle", cause)
 	}
-	if !ctx.XRefTable.StructTreeRemoved {
-		t.Fatal("removal flag lost with the dropped notice")
+	if !ctx.XRefTable.StructTreeInvalid || ctx.XRefTable.StructTreeRemoved != !keep {
+		t.Fatalf("flags lost with the dropped notice: invalid %t, removed %t", ctx.XRefTable.StructTreeInvalid, ctx.XRefTable.StructTreeRemoved)
 	}
 }
 
@@ -534,5 +599,245 @@ func TestRemoveInvalidStructTreeRoundTrip(t *testing.T) {
 	digest := func(io.Reader, int) error { return nil }
 	if err := ExtractPages(context.Background(), bytes.NewReader(written), []string{"1"}, digest, model.NewDefaultConfiguration()); err != nil {
 		t.Fatalf("extract: %v", err)
+	}
+}
+
+// requireKeptMissingKidsTree checks that ctx kept the tree of structTreeMissingKidsPDF, with one skipped notice.
+func requireKeptMissingKidsTree(t *testing.T, ctx *model.Context) {
+	t.Helper()
+	if !ctx.XRefTable.StructTreeInvalid || ctx.XRefTable.StructTreeRemoved {
+		t.Fatalf("StructTreeInvalid %t, StructTreeRemoved %t, want true and false",
+			ctx.XRefTable.StructTreeInvalid, ctx.XRefTable.StructTreeRemoved)
+	}
+	root, found := ctx.XRefTable.RootDict.Find("StructTreeRoot")
+	if !found || root != *types.NewIndirectRef(4, 0) {
+		t.Fatalf("StructTreeRoot %v, want the kept reference 4 0 R", root)
+	}
+	notices := ctx.ValidationReport().Notices()
+	if len(notices) != 1 {
+		t.Fatalf("got %d notices, want 1: %v", len(notices), notices)
+	}
+	n := notices[0]
+	if n.Path != "StructTreeRoot" || n.Disposition != model.NoticeSkipped {
+		t.Fatalf("got path %q disposition %q", n.Path, n.Disposition)
+	}
+	const wantMessage = "StructTreeRoot: number tree StructTree Kids[0] obj#99: missing dict"
+	if n.Message != wantMessage {
+		t.Fatalf("got message %q, want %q", n.Message, wantMessage)
+	}
+	if !errors.Is(model.WithInvalidPDF(n.Cause, model.NoticePhaseValidate), model.ErrInvalidStructTree) {
+		t.Fatalf("cause %v is not ErrInvalidStructTree", n.Cause)
+	}
+}
+
+// TestKeepInvalidStructTree verifies KeepInvalidStructTree keeps an invalid tree in the catalog, with one skipped notice.
+func TestKeepInvalidStructTree(t *testing.T) {
+	ctx, err := ReadAndValidate(context.Background(), bytes.NewReader(structTreeMissingKidsPDF()), structTreeKeepConfiguration())
+	if err != nil {
+		t.Fatalf("got %v, want no error", err)
+	}
+	requireKeptMissingKidsTree(t, ctx)
+}
+
+// TestKeepInvalidStructTreePrecedence verifies KeepInvalidStructTree takes precedence over RemoveInvalidStructTree.
+func TestKeepInvalidStructTreePrecedence(t *testing.T) {
+	conf := structTreeKeepConfiguration()
+	conf.RemoveInvalidStructTree = true
+	ctx, err := ReadAndValidate(context.Background(), bytes.NewReader(structTreeMissingKidsPDF()), conf)
+	if err != nil {
+		t.Fatalf("got %v, want no error", err)
+	}
+	requireKeptMissingKidsTree(t, ctx)
+}
+
+// TestKeepInvalidStructTreeShapes verifies that each kept invalid tree is written unchanged, and that writing, merging,
+// extracting, splitting and reading page boundaries succeed with it.
+func TestKeepInvalidStructTreeShapes(t *testing.T) {
+	const (
+		catalogObj = "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>"
+		pagesObj   = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+		pageObj    = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /StructParents 0 >>"
+	)
+	shapes := []struct {
+		name string
+		data []byte
+	}{
+		{"missing kid", failureTestStructTreePDF(3, "<< /Kids [99 0 R] >>")},
+		{"nums not an array", failureTestStructTreePDF(3, "<< /Nums 7 >>")},
+		{"cycle and bad parent tree", structTreeChainPDF(2, false, false, true, "<< /Kids [99 0 R] >>", "")},
+		{"deep chain", structTreeDeepPDF(150, "<< /Type /StructElem /S /P /P 4 0 R /Pg 3 0 R /A 5 >>")},
+		{"deep chain with a non-name type", structTreeDeepPDF(1000, "<< /Type 5 /S /P /P 4 0 R >>")},
+		{"root not a dict", failureTestPDF(catalogObj, pagesObj, pageObj, "5")},
+		{"wrong root type", failureTestPDF(catalogObj, pagesObj, pageObj, "<< /Type /Foo /K 5 >>")},
+		{"string element", failureTestPDF(catalogObj, pagesObj, pageObj,
+			"<< /Type /StructTreeRoot /K [6 0 R] /ParentTree 5 0 R /RoleMap 7 >>",
+			"<< /Nums [0 [6 0 R]] >>",
+			"<< /Type /StructElem /S /P /P 4 0 R /Pg 3 0 R /K [7 0 R] >>",
+			"<< /Type /StructElem /S 7 /P 6 0 R /Pg 3 0 R /K (x) >>")},
+	}
+	valid := failureTestValidPDF()
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			ctx, report, err := ReadAndValidateWithReport(context.Background(), bytes.NewReader(sh.data), nil)
+			if err != nil {
+				t.Fatalf("relaxed read: %v", err)
+			}
+			if !report.StructTreeInvalid || report.StructTreeRemoved {
+				t.Fatalf("StructTreeInvalid %t, StructTreeRemoved %t, want true and false", report.StructTreeInvalid, report.StructTreeRemoved)
+			}
+			if _, found := ctx.RootDict.Find("StructTreeRoot"); !found {
+				t.Fatal("StructTreeRoot removed, want it kept")
+			}
+
+			var out bytes.Buffer
+			if err := WriteContext(context.Background(), ctx, &out); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			reread, rereadReport, err := ReadAndValidateWithReport(context.Background(), bytes.NewReader(out.Bytes()), nil)
+			if err != nil {
+				t.Fatalf("tolerant re-read: %v", err)
+			}
+			if !rereadReport.StructTreeInvalid || reread.PageCount != 1 {
+				t.Fatalf("re-read: StructTreeInvalid %t, page count %d, want true and 1", rereadReport.StructTreeInvalid, reread.PageCount)
+			}
+			if _, found := reread.RootDict.Find("StructTreeRoot"); !found {
+				t.Fatal("re-read: StructTreeRoot not kept")
+			}
+			// The written tree is unchanged, so a default read still rejects it.
+			if _, err := ReadAndValidate(context.Background(), bytes.NewReader(out.Bytes()), model.NewDefaultConfiguration()); !errors.Is(err, ErrInvalidStructTree) {
+				t.Fatalf("default read of written output: got %v, want ErrInvalidStructTree", err)
+			}
+
+			for pos, inputs := range [][][]byte{{sh.data, valid}, {valid, sh.data}} {
+				var merged bytes.Buffer
+				mergeReport, err := MergeRawWithReport(context.Background(), mergeTestReaders(inputs...), &merged, nil, MergeOptions{})
+				if err != nil {
+					t.Fatalf("merge with the shape at %d: %v", pos, err)
+				}
+				if !mergeReport.Inputs[pos].StructTreeInvalid {
+					t.Fatalf("merge: input %d StructTreeInvalid is false", pos)
+				}
+				mergedCtx, _, err := ReadAndValidateWithReport(context.Background(), bytes.NewReader(merged.Bytes()), nil)
+				if err != nil {
+					t.Fatalf("merge: tolerant re-read: %v", err)
+				}
+				if mergedCtx.PageCount != 2 {
+					t.Fatalf("merge: page count %d, want 2", mergedCtx.PageCount)
+				}
+				_, kept := mergedCtx.RootDict.Find("StructTreeRoot")
+				if kept != (pos == 0) {
+					t.Fatalf("merge: StructTreeRoot kept %t at input %d, want %t", kept, pos, pos == 0)
+				}
+			}
+
+			var pages [][]byte
+			err = ExtractPagesContext(context.Background(), ctx, nil, func(r io.Reader, _ int) error {
+				b, err := io.ReadAll(r)
+				if err != nil {
+					return err
+				}
+				pages = append(pages, b)
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("extract: %v", err)
+			}
+			for _, page := range pages {
+				if _, _, err := ReadAndValidateWithReport(context.Background(), bytes.NewReader(page), nil); err != nil {
+					t.Fatalf("extracted page: %v", err)
+				}
+			}
+
+			if _, err := SplitRaw(context.Background(), bytes.NewReader(sh.data), 1, model.NewTolerantConfiguration()); err != nil {
+				t.Fatalf("split: %v", err)
+			}
+
+			pbs, err := ReadPageBoundaries(context.Background(), bytes.NewReader(sh.data), nil, nil)
+			if err != nil {
+				t.Fatalf("page boundaries: %v", err)
+			}
+			want, err := ctx.XRefTable.PageBoundaries(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("validated page boundaries: %v", err)
+			}
+			if len(pbs) != 1 || !reflect.DeepEqual(pbs, want) {
+				t.Fatalf("page boundaries %v, want %v", pbs, want)
+			}
+		})
+	}
+}
+
+// structTreeObjStmPDF builds a struct tree whose elements 6 and 7 live in object stream 8.
+func structTreeObjStmPDF(elem7, parentTree string) []byte {
+	elem6 := "<< /Type /StructElem /S /P /P 4 0 R /Pg 3 0 R /K [7 0 R] >>"
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.7\n%\xFF\xFF\xFF\xFF\n")
+	offsets := map[int]int{}
+	object := func(nr int, s string) {
+		offsets[nr] = b.Len()
+		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", nr, s)
+	}
+	object(1, "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 4 0 R >>")
+	object(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+	object(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /StructParents 0 >>")
+	object(4, "<< /Type /StructTreeRoot /K [6 0 R] /ParentTree 5 0 R >>")
+	object(5, parentTree)
+	prolog := fmt.Sprintf("6 0 7 %d ", len(elem6)+1)
+	content := prolog + elem6 + " " + elem7 + " "
+	object(8, fmt.Sprintf("<< /Type /ObjStm /N 2 /First %d /Length %d >>\nstream\n%s\nendstream", len(prolog), len(content), content))
+	var rows []byte
+	row := func(typ byte, f2, f3 int) {
+		rows = append(rows, typ, byte(f2>>24), byte(f2>>16), byte(f2>>8), byte(f2), byte(f3>>8), byte(f3))
+	}
+	row(0, 0, 65535)
+	for i := 1; i <= 5; i++ {
+		row(1, offsets[i], 0)
+	}
+	row(2, 8, 0)
+	row(2, 8, 1)
+	row(1, offsets[8], 0)
+	xref := b.Len()
+	row(1, xref, 0)
+	fmt.Fprintf(&b, "9 0 obj\n<< /Type /XRef /Size 10 /W [1 4 2] /Root 1 0 R /Length %d >>\nstream\n", len(rows))
+	b.Write(rows)
+	fmt.Fprintf(&b, "\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n", xref)
+	return b.Bytes()
+}
+
+// TestKeepInvalidStructTreeUnreadableObject verifies a tree with an object the writer cannot read is removed with a
+// repaired notice, and that a tree of the same layout with readable objects is kept.
+func TestKeepInvalidStructTreeUnreadableObject(t *testing.T) {
+	ctx, report, err := ReadAndValidateWithReport(context.Background(),
+		bytes.NewReader(structTreeObjStmPDF("<< /Length 5 >>", "<< /Nums [0 [6 0 R]] >>")), nil)
+	if err != nil {
+		t.Fatalf("got %v, want no error", err)
+	}
+	if !report.StructTreeInvalid || !report.StructTreeRemoved {
+		t.Fatalf("StructTreeInvalid %t, StructTreeRemoved %t, want both true", report.StructTreeInvalid, report.StructTreeRemoved)
+	}
+	if _, found := ctx.RootDict.Find("StructTreeRoot"); found {
+		t.Fatal("StructTreeRoot kept, want it removed")
+	}
+	notices := ctx.ValidationReport().Notices()
+	if len(notices) != 1 || notices[0].Path != "StructTreeRoot" || notices[0].Disposition != model.NoticeRepaired ||
+		!strings.Contains(notices[0].Message, "object stream contains stream object") {
+		t.Fatalf("got notices %v, want one repaired StructTreeRoot notice about the stream object", notices)
+	}
+	var out bytes.Buffer
+	if err := WriteContext(context.Background(), ctx, &out); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Control: the same layout with readable objects keeps the tree, so the test cannot pass by always removing it.
+	ctx, report, err = ReadAndValidateWithReport(context.Background(),
+		bytes.NewReader(structTreeObjStmPDF("<< /Type /StructElem /S /P /P 6 0 R /Pg 3 0 R >>", "<< /Kids [99 0 R] >>")), nil)
+	if err != nil {
+		t.Fatalf("control: got %v, want no error", err)
+	}
+	if !report.StructTreeInvalid || report.StructTreeRemoved || ctx.XRefTable.StructTreeRemoved {
+		t.Fatalf("control: StructTreeInvalid %t, StructTreeRemoved %t, want true and false", report.StructTreeInvalid, report.StructTreeRemoved)
+	}
+	if err := WriteContext(context.Background(), ctx, &out); err != nil {
+		t.Fatalf("control: write: %v", err)
 	}
 }

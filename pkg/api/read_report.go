@@ -30,8 +30,16 @@ type ReadReport struct {
 	// configured passwords, by default the empty user password.
 	Encrypted bool
 
+	// StructTreeInvalid reports that the structure tree failed validation and
+	// was accepted: kept unvalidated, see
+	// model.Configuration.KeepInvalidStructTree, or removed, see StructTreeRemoved.
+	StructTreeInvalid bool
+
 	// StructTreeRemoved reports that an invalid structure tree was removed from
 	// the in-memory catalog, see model.Configuration.RemoveInvalidStructTree.
+	// With model.Configuration.KeepInvalidStructTree it is also set when an
+	// object reachable from the tree cannot be read, as the writer could not
+	// write the tree then.
 	StructTreeRemoved bool
 
 	// Notices is the validation report of the input as it was read and
@@ -78,6 +86,7 @@ func ReadAndValidateWithReport(c context.Context, rs io.ReadSeeker, conf *model.
 func newReadReport(ctx *model.Context) ReadReport {
 	return ReadReport{
 		Encrypted:         ctx.XRefTable.Encrypt != nil,
+		StructTreeInvalid: ctx.XRefTable.StructTreeInvalid,
 		StructTreeRemoved: ctx.XRefTable.StructTreeRemoved,
 		Notices:           ctx.ValidationReport(),
 	}

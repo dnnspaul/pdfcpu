@@ -1905,11 +1905,11 @@ func validateRootEntries(
 				err, validationEntryObjectNumber(rootObjNr, rootDict, validator.name),
 			)
 			if validator.name == "StructTreeRoot" {
-				removed, ctxErr := removeInvalidStructTree(c, ctx, rootDict, err)
+				tolerated, ctxErr := tolerateInvalidStructTree(c, ctx, rootDict, err)
 				if ctxErr != nil {
 					return ctxErr
 				}
-				if removed {
+				if tolerated {
 					continue
 				}
 			}
@@ -2022,14 +2022,17 @@ func validateRootObject(c context.Context, ctx *model.Context, rootDict types.Di
 	return nil
 }
 
-// removeInvalidStructTree applies Configuration.RemoveInvalidStructTree to err,
-// a failure of the catalog entry StructTreeRoot. It reports whether the
-// structure tree was removed from the catalog. If the context is done, it
+// tolerateInvalidStructTree applies Configuration.KeepInvalidStructTree and
+// Configuration.RemoveInvalidStructTree to err, a failure of the catalog entry
+// StructTreeRoot. It reports whether the failure was tolerated: the tree is
+// kept unvalidated, or removed from the catalog. If the context is done, it
 // returns the context error instead of the structure tree failure, so a
 // deadline is never reported as invalid input.
-func removeInvalidStructTree(c context.Context, ctx *model.Context, rootDict types.Dict, err error) (bool, error) {
+func tolerateInvalidStructTree(c context.Context, ctx *model.Context, rootDict types.Dict, err error) (bool, error) {
 	xRefTable := ctx.XRefTable
-	if xRefTable.ValidationMode != model.ValidationRelaxed || xRefTable.Conf == nil || !xRefTable.Conf.RemoveInvalidStructTree {
+	conf := xRefTable.Conf
+	if xRefTable.ValidationMode != model.ValidationRelaxed || conf == nil ||
+		!conf.KeepInvalidStructTree && !conf.RemoveInvalidStructTree {
 		return false, nil
 	}
 	// Same exclusions as ErrInvalidStructTree: never swallow cancellation,
@@ -2041,10 +2044,93 @@ func removeInvalidStructTree(c context.Context, ctx *model.Context, rootDict typ
 	if ctxErr := contextutil.Check(c); ctxErr != nil {
 		return false, ctxErr
 	}
-	rootDict.Delete("StructTreeRoot")
-	xRefTable.StructTreeRemoved = true
-	notice := model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeRepaired, err.Error(), err)
+	keep := conf.KeepInvalidStructTree
+	if keep {
+		o, _ := rootDict.Find("StructTreeRoot")
+		readable, walkErr := structTreeObjectsReadable(c, xRefTable, o)
+		if walkErr != nil {
+			return false, walkErr
+		}
+		if ctx.Read.ReaderErr() != nil {
+			return false, nil
+		}
+		keep = readable
+	}
+	xRefTable.StructTreeInvalid = true
+	disposition := model.NoticeSkipped
+	if !keep {
+		rootDict.Delete("StructTreeRoot")
+		xRefTable.StructTreeRemoved = true
+		disposition = model.NoticeRepaired
+	}
+	notice := model.NewValidationNotice(model.NoticePhaseValidate, disposition, err.Error(), err)
 	notice.Path = "StructTreeRoot"
 	xRefTable.AddValidationNotice(notice)
 	return true, nil
+}
+
+// structTreeObjectsReadable reports whether every object reachable from o, the
+// catalog's StructTreeRoot entry, can be dereferenced. The writer dereferences
+// each of them, so a kept structure tree with an unreadable object would fail
+// the write. The walk is iterative, visits each object once and does not enter
+// page dicts, which the writer writes from the page tree only. It returns
+// context and resource limit errors.
+func structTreeObjectsReadable(c context.Context, xRefTable *model.XRefTable, o types.Object) (bool, error) {
+	visited := map[int]bool{}
+	stack := []types.Object{o}
+	for len(stack) > 0 {
+		if err := contextutil.Check(c); err != nil {
+			return false, err
+		}
+		o := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if ir, ok := o.(types.IndirectRef); ok {
+			objNr := ir.ObjectNumber.Value()
+			if visited[objNr] {
+				continue
+			}
+			visited[objNr] = true
+			var err error
+			if o, err = xRefTable.Dereference(ir); err != nil {
+				return false, structTreeWalkStop(c, err)
+			}
+		}
+		var d types.Dict
+		switch o := o.(type) {
+		case types.Dict:
+			d = o
+		case types.StreamDict:
+			d = o.Dict
+		case types.Array:
+			stack = append(stack, o...)
+			continue
+		default:
+			continue
+		}
+		t, err := xRefTable.Dereference(d["Type"])
+		if err != nil {
+			return false, structTreeWalkStop(c, err)
+		}
+		if t == types.Name("Page") {
+			continue
+		}
+		for _, v := range d {
+			stack = append(stack, v)
+		}
+	}
+	return true, nil
+}
+
+// structTreeWalkStop returns the error that stops validation when a
+// dereference in structTreeObjectsReadable failed with err: the context error
+// if c is done, err if it is a resource limit error, and nil if the object is
+// only unreadable.
+func structTreeWalkStop(c context.Context, err error) error {
+	if ctxErr := contextutil.Check(c); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, model.ErrResourceLimit) {
+		return err
+	}
+	return nil
 }

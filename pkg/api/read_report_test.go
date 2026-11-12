@@ -82,11 +82,11 @@ func TestNewTolerantConfiguration(t *testing.T) {
 	if conf.Limits != want {
 		t.Fatalf("got limits %+v, want %+v", conf.Limits, want)
 	}
-	if !conf.RemoveInvalidStructTree {
-		t.Fatal("RemoveInvalidStructTree not set")
+	if !conf.KeepInvalidStructTree || conf.RemoveInvalidStructTree {
+		t.Fatal("KeepInvalidStructTree not set, or RemoveInvalidStructTree set")
 	}
-	if model.NewDefaultConfiguration().RemoveInvalidStructTree {
-		t.Fatal("default configuration removes invalid structure trees")
+	if d := model.NewDefaultConfiguration(); d.RemoveInvalidStructTree || d.KeepInvalidStructTree {
+		t.Fatal("default configuration tolerates invalid structure trees")
 	}
 	if model.NewTolerantConfiguration() == conf {
 		t.Fatal("got the same configuration twice")
@@ -96,7 +96,7 @@ func TestNewTolerantConfiguration(t *testing.T) {
 	wantConf := model.NewDefaultConfiguration()
 	wantConf.ValidationMode = model.ValidationRelaxed
 	wantConf.Limits = want
-	wantConf.RemoveInvalidStructTree = true
+	wantConf.KeepInvalidStructTree = true
 	wantConf.CreationDate = conf.CreationDate
 	if !reflect.DeepEqual(conf, wantConf) {
 		t.Fatalf("got %#v, want %#v", conf, wantConf)
@@ -115,8 +115,8 @@ func TestReadAndValidateWithReport(t *testing.T) {
 	if ctx.Configuration.Limits.MaxNotices != 250_000 {
 		t.Fatalf("got MaxNotices %d, want 250000", ctx.Configuration.Limits.MaxNotices)
 	}
-	if report.Encrypted || report.StructTreeRemoved {
-		t.Fatalf("got encrypted %t and structTreeRemoved %t, want false and false", report.Encrypted, report.StructTreeRemoved)
+	if report.Encrypted || report.StructTreeInvalid || report.StructTreeRemoved {
+		t.Fatalf("got encrypted %t, structTreeInvalid %t and structTreeRemoved %t, want all false", report.Encrypted, report.StructTreeInvalid, report.StructTreeRemoved)
 	}
 	if report.Notices.Len() == 0 {
 		t.Fatal("no notices reported")
@@ -136,7 +136,7 @@ func TestReadAndValidateWithReportOneParse(t *testing.T) {
 		{"struct tree", failureTestStructTreePDF(3, "<< /Nums [] >>")},
 		{"notices", noticeExplosionPDF(2, 3)},
 		{"encrypted", readReportOwnerOnlyPDF(t, model.NewAESConfiguration("", "owner", 256))},
-		{"struct tree removed", failureTestStructTreePDF(3, "<< /Kids [99 0 R] >>")},
+		{"struct tree invalid", failureTestStructTreePDF(3, "<< /Kids [99 0 R] >>")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -284,32 +284,54 @@ func TestReadAndValidateWithReportErrors(t *testing.T) {
 	})
 }
 
-// TestReadAndValidateWithReportStructTreeRemoved verifies an invalid structure tree is removed and reported, and
-// is an error when the configuration does not allow removal.
-func TestReadAndValidateWithReportStructTreeRemoved(t *testing.T) {
+// TestReadAndValidateWithReportStructTreeInvalid verifies an invalid structure tree is kept and reported by default,
+// removed and reported when the configuration asks for removal, and an error when it allows neither.
+func TestReadAndValidateWithReportStructTreeInvalid(t *testing.T) {
 	data := failureTestStructTreePDF(3, "<< /Kids [99 0 R] >>")
 	ctx, report, err := ReadAndValidateWithReport(context.Background(), bytes.NewReader(data), nil)
 	if err != nil {
 		t.Fatalf("got %v, want no error", err)
 	}
-	if !report.StructTreeRemoved || !ctx.XRefTable.StructTreeRemoved {
-		t.Fatalf("got report %t and context %t, want both true", report.StructTreeRemoved, ctx.XRefTable.StructTreeRemoved)
+	if !report.StructTreeInvalid || !ctx.XRefTable.StructTreeInvalid {
+		t.Fatalf("got report %t and context %t, want both true", report.StructTreeInvalid, ctx.XRefTable.StructTreeInvalid)
 	}
-	if _, ok := ctx.RootDict.Find("StructTreeRoot"); ok {
-		t.Fatal("StructTreeRoot still in catalog")
+	if report.StructTreeRemoved || ctx.XRefTable.StructTreeRemoved {
+		t.Fatal("kept structure tree reported as removed")
+	}
+	if _, ok := ctx.RootDict.Find("StructTreeRoot"); !ok {
+		t.Fatal("StructTreeRoot not in catalog, want it kept")
 	}
 	if report.Notices.Len() != 1 {
 		t.Fatalf("got %d notices, want 1", report.Notices.Len())
 	}
 	first, ok := report.Notices.First()
-	if !ok || first.Path != "StructTreeRoot" || first.Disposition != model.NoticeRepaired {
-		t.Fatalf("got notice %+v, want repaired StructTreeRoot", first)
+	if !ok || first.Path != "StructTreeRoot" || first.Disposition != model.NoticeSkipped {
+		t.Fatalf("got notice %+v, want skipped StructTreeRoot", first)
 	}
 	if !reflect.DeepEqual(report.Notices, ctx.ValidationReport()) {
 		t.Fatal("report notices differ from the context's validation report")
 	}
 
 	conf := model.NewTolerantConfiguration()
+	conf.KeepInvalidStructTree = false
+	conf.RemoveInvalidStructTree = true
+	ctx, report, err = ReadAndValidateWithReport(context.Background(), bytes.NewReader(data), conf)
+	if err != nil {
+		t.Fatalf("remove: got %v, want no error", err)
+	}
+	if !report.StructTreeInvalid || !report.StructTreeRemoved || !ctx.XRefTable.StructTreeRemoved {
+		t.Fatalf("remove: got report invalid %t removed %t, want both true", report.StructTreeInvalid, report.StructTreeRemoved)
+	}
+	if _, ok := ctx.RootDict.Find("StructTreeRoot"); ok {
+		t.Fatal("remove: StructTreeRoot still in catalog")
+	}
+	first, ok = report.Notices.First()
+	if !ok || first.Path != "StructTreeRoot" || first.Disposition != model.NoticeRepaired {
+		t.Fatalf("remove: got notice %+v, want repaired StructTreeRoot", first)
+	}
+
+	conf = model.NewTolerantConfiguration()
+	conf.KeepInvalidStructTree = false
 	conf.RemoveInvalidStructTree = false
 	if _, _, err := ReadAndValidateWithReport(context.Background(), bytes.NewReader(data), conf); !errors.Is(err, ErrInvalidStructTree) {
 		t.Fatalf("got %v, want ErrInvalidStructTree", err)

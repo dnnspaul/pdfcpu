@@ -27,8 +27,8 @@ import (
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
-// TestRemoveInvalidStructTreeDecision verifies which StructTreeRoot failures removeInvalidStructTree removes.
-func TestRemoveInvalidStructTreeDecision(t *testing.T) {
+// TestTolerateInvalidStructTreeDecision verifies which StructTreeRoot failures tolerateInvalidStructTree tolerates, and whether it keeps or removes them.
+func TestTolerateInvalidStructTreeDecision(t *testing.T) {
 	structErr := model.WithValidationErrorEntry(errors.New("number tree StructTree Kids[0]: missing dict"), "StructTreeRoot")
 	limitErr := model.WithValidationErrorEntry(
 		&model.ResourceLimitError{Kind: model.LimitNotices, Limit: 1, Value: 2}, "StructTreeRoot",
@@ -36,26 +36,34 @@ func TestRemoveInvalidStructTreeDecision(t *testing.T) {
 	plainErr := model.WithValidationErrorEntry(errors.New("page tree broken"), "Pages")
 
 	cases := []struct {
-		name        string
-		remove      bool
-		strict      bool
-		ctx         context.Context
-		err         error
-		wantRemoved bool
-		wantCtxErr  bool
-		readerFail  bool
+		name          string
+		keep          bool
+		remove        bool
+		strict        bool
+		ctx           context.Context
+		err           error
+		wantTolerated bool
+		wantCtxErr    bool
+		readerFail    bool
 	}{
-		{name: "structure failure", remove: true, ctx: context.Background(), err: structErr, wantRemoved: true},
+		{name: "structure failure", remove: true, ctx: context.Background(), err: structErr, wantTolerated: true},
 		{name: "reader failed", remove: true, ctx: context.Background(), err: structErr, readerFail: true},
 		{name: "flag off", remove: false, ctx: context.Background(), err: structErr},
 		{name: "strict mode", remove: true, strict: true, ctx: context.Background(), err: structErr},
 		{name: "resource limit", remove: true, ctx: context.Background(), err: limitErr},
 		{name: "not a structure tree failure", remove: true, ctx: context.Background(), err: plainErr},
 		{name: "context done", remove: true, ctx: canceledStructTreeContext(), err: structErr, wantCtxErr: true},
+		{name: "keep", keep: true, ctx: context.Background(), err: structErr, wantTolerated: true},
+		{name: "keep and remove", keep: true, remove: true, ctx: context.Background(), err: structErr, wantTolerated: true},
+		{name: "keep reader failed", keep: true, ctx: context.Background(), err: structErr, readerFail: true},
+		{name: "keep strict mode", keep: true, strict: true, ctx: context.Background(), err: structErr},
+		{name: "keep resource limit", keep: true, ctx: context.Background(), err: limitErr},
+		{name: "keep context done", keep: true, ctx: canceledStructTreeContext(), err: structErr, wantCtxErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			conf := model.NewDefaultConfiguration()
+			conf.KeepInvalidStructTree = tc.keep
 			conf.RemoveInvalidStructTree = tc.remove
 			var rs io.ReadSeeker = strings.NewReader("")
 			if tc.readerFail {
@@ -77,10 +85,14 @@ func TestRemoveInvalidStructTreeDecision(t *testing.T) {
 			}
 			rootDict := types.Dict{"StructTreeRoot": types.Dict{}}
 
-			removed, ctxErr := removeInvalidStructTree(tc.ctx, ctx, rootDict, tc.err)
-			if removed != tc.wantRemoved {
-				t.Fatalf("removed: got %t, want %t", removed, tc.wantRemoved)
+			tolerated, ctxErr := tolerateInvalidStructTree(tc.ctx, ctx, rootDict, tc.err)
+			if tolerated != tc.wantTolerated {
+				t.Fatalf("tolerated: got %t, want %t", tolerated, tc.wantTolerated)
 			}
+			if ctx.XRefTable.StructTreeInvalid != tc.wantTolerated {
+				t.Fatalf("StructTreeInvalid: got %t, want %t", ctx.XRefTable.StructTreeInvalid, tc.wantTolerated)
+			}
+			wantRemoved := tc.wantTolerated && !tc.keep
 			if (ctxErr != nil) != tc.wantCtxErr {
 				t.Fatalf("context error: got %v, want error %t", ctxErr, tc.wantCtxErr)
 			}
@@ -88,11 +100,11 @@ func TestRemoveInvalidStructTreeDecision(t *testing.T) {
 				t.Fatalf("got %v, want context.Canceled", ctxErr)
 			}
 			_, kept := rootDict["StructTreeRoot"]
-			if kept == tc.wantRemoved {
-				t.Fatalf("StructTreeRoot kept: %t, want %t", kept, !tc.wantRemoved)
+			if kept == wantRemoved {
+				t.Fatalf("StructTreeRoot kept: %t, want %t", kept, !wantRemoved)
 			}
-			if ctx.XRefTable.StructTreeRemoved != tc.wantRemoved {
-				t.Fatalf("StructTreeRemoved: got %t, want %t", ctx.XRefTable.StructTreeRemoved, tc.wantRemoved)
+			if ctx.XRefTable.StructTreeRemoved != wantRemoved {
+				t.Fatalf("StructTreeRemoved: got %t, want %t", ctx.XRefTable.StructTreeRemoved, wantRemoved)
 			}
 		})
 	}

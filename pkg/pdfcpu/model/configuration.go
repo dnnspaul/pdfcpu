@@ -434,10 +434,23 @@ type Configuration struct {
 
 	// RemoveInvalidStructTree removes an invalid structure tree from the
 	// in-memory catalog in relaxed validation mode instead of failing.
-	// The failure is reported as one validation notice and
-	// XRefTable.StructTreeRemoved is set. Context errors, reader errors and
-	// resource limit errors are never removed. It has no effect in strict mode.
+	// The failure is reported as one validation notice, and
+	// XRefTable.StructTreeInvalid and XRefTable.StructTreeRemoved are set.
+	// Context errors, reader errors and resource limit errors are never
+	// removed. It has no effect in strict mode, or if KeepInvalidStructTree
+	// is set.
 	RemoveInvalidStructTree bool
+
+	// KeepInvalidStructTree keeps an invalid structure tree in the catalog
+	// in relaxed validation mode instead of failing: validation of the tree
+	// stops at the first failure, and the writer writes the tree unchanged.
+	// The failure is reported as one skipped validation notice and
+	// XRefTable.StructTreeInvalid is set. If an object reachable from the
+	// tree cannot be read, the writer could not write it, so the tree is
+	// removed as with RemoveInvalidStructTree. Context errors, reader errors
+	// and resource limit errors are never tolerated. It has no effect in
+	// strict mode and takes precedence over RemoveInvalidStructTree.
+	KeepInvalidStructTree bool
 }
 
 // Clone returns an independent copy of c and preserves nil receiver semantics.
@@ -990,7 +1003,8 @@ func NewRC4Configuration(userPW, ownerPW string, keyLength int) *Configuration {
 
 // NewTolerantConfiguration returns a default configuration for reading PDFs
 // from untrusted sources: relaxed validation, bounded object numbers and
-// notices, a bounded page count, and removal of an invalid structure tree.
+// notices, a bounded page count, and an invalid structure tree kept unvalidated
+// instead of failing the read.
 // It is the configuration api.ReadAndValidateWithReport uses for a nil conf.
 func NewTolerantConfiguration() *Configuration {
 	c := NewDefaultConfiguration()
@@ -1000,7 +1014,7 @@ func NewTolerantConfiguration() *Configuration {
 	c.Limits.MaxRetainedNotices = 1_000
 	c.Limits.MaxNotices = 250_000
 	c.Limits.MaxPageCount = 100_000
-	c.RemoveInvalidStructTree = true
+	c.KeepInvalidStructTree = true
 	return c
 }
 

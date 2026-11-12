@@ -722,11 +722,13 @@ func writeDeepDict(c context.Context, ctx *model.Context, d types.Dict, objNr, g
 	if err := contextutil.Check(c); err != nil {
 		return err
 	}
-	dictType, _, err := ctx.DereferenceNameEntry(d, "Type")
+	// Only a page dict needs its Type here. A Type that is not a name, which
+	// an unvalidated part of the document can hold, is written unchanged.
+	dictType, err := ctx.Dereference(d["Type"])
 	if err != nil {
 		return fmt.Errorf("write dict obj#%d gen#%d Type: %w", objNr, genNr, err)
 	}
-	if dictType != nil && dictType.Value() == "Page" {
+	if dictType == types.Name("Page") {
 		valid, err := ctx.IsObjValid(objNr, genNr)
 		if err != nil {
 			return fmt.Errorf("write page dict obj#%d gen#%d: check valid: %w", objNr, genNr, err)

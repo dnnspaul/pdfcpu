@@ -199,8 +199,15 @@ type XRefTable struct {
 	URIs             map[int]map[string]string // URIs for link checking
 	validationReport *ValidationReport
 
+	// StructTreeInvalid reports that the StructTreeRoot failed relaxed
+	// validation and was accepted, see Configuration.KeepInvalidStructTree
+	// and Configuration.RemoveInvalidStructTree.
+	StructTreeInvalid bool
+
 	// StructTreeRemoved reports that validation removed an invalid StructTreeRoot
-	// from the catalog, see Configuration.RemoveInvalidStructTree.
+	// from the catalog, see Configuration.RemoveInvalidStructTree. With
+	// Configuration.KeepInvalidStructTree it is also set when an object reachable
+	// from the tree cannot be read, as the writer could not write the tree then.
 	StructTreeRemoved bool
 
 	Optimized      bool
