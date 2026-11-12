@@ -35,6 +35,9 @@ const (
 
 	// LimitNotices identifies a limit on the number of validation notices.
 	LimitNotices
+
+	// LimitPages identifies a limit on the number of pages of a page tree.
+	LimitPages
 )
 
 // String returns a description of k.
@@ -44,6 +47,8 @@ func (k LimitKind) String() string {
 		return "object number"
 	case LimitNotices:
 		return "validation notice"
+	case LimitPages:
+		return "page count"
 	}
 	return fmt.Sprintf("LimitKind(%d)", int(k))
 }
@@ -102,4 +107,22 @@ func (l ResourceLimits) CheckObjectRange(start, count int64) error {
 // highest object number, against l.MaxObjectNumber.
 func (l ResourceLimits) CheckXRefSize(size int64) error {
 	return l.CheckObjectRange(0, size)
+}
+
+// CheckPageCount returns a *ResourceLimitError of kind LimitPages if pageCount
+// exceeds l.MaxPageCount. A zero or negative MaxPageCount disables the check.
+func (l ResourceLimits) CheckPageCount(pageCount int) error {
+	if l.MaxPageCount > 0 && pageCount > l.MaxPageCount {
+		return &ResourceLimitError{Kind: LimitPages, Limit: int64(l.MaxPageCount), Value: int64(pageCount)}
+	}
+	return nil
+}
+
+// CheckPageCount checks pageCount against the MaxPageCount of xRefTable's
+// configuration. Without a configuration it checks nothing.
+func (xRefTable *XRefTable) CheckPageCount(pageCount int) error {
+	if xRefTable == nil || xRefTable.Conf == nil {
+		return nil
+	}
+	return xRefTable.Conf.Limits.CheckPageCount(pageCount)
 }

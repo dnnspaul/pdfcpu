@@ -78,7 +78,7 @@ func TestNewTolerantConfiguration(t *testing.T) {
 		t.Fatalf("got validation mode %v, want relaxed", conf.ValidationMode)
 	}
 	want := model.NewDefaultConfiguration().Limits
-	want.MaxObjectNumber, want.MaxRetainedNotices, want.MaxNotices = 8_388_607, 1_000, 250_000
+	want.MaxObjectNumber, want.MaxRetainedNotices, want.MaxNotices, want.MaxPageCount = 8_388_607, 1_000, 250_000, 100_000
 	if conf.Limits != want {
 		t.Fatalf("got limits %+v, want %+v", conf.Limits, want)
 	}

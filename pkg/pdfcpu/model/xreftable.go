@@ -2951,6 +2951,9 @@ func (xRefTable *XRefTable) EnsurePageCount() error {
 	if pageCount == nil {
 		return errors.New("pageDict: missing \"Count\"")
 	}
+	if err := xRefTable.CheckPageCount(*pageCount); err != nil {
+		return fmt.Errorf("pageDict Count: %w", err)
+	}
 
 	xRefTable.PageCount = *pageCount
 
@@ -3232,6 +3235,19 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
 		c, objNr, kids, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth, visit)
 }
 
+// countPageTreeLeaf counts the page objNr. It rejects a page past
+// ResourceLimits.MaxPageCount and a page past limit.
+func (xRefTable *XRefTable) countPageTreeLeaf(objNr int, n *int, limit int) error {
+	if err := xRefTable.CheckPageCount(*n + 1); err != nil {
+		return err
+	}
+	if *n >= limit {
+		return fmt.Errorf("page tree obj#%d: more pages than the %d objects of the PDF", objNr, limit)
+	}
+	*n++
+	return nil
+}
+
 func (xRefTable *XRefTable) countPageTreeLeaves(
 	c context.Context,
 	root types.IndirectRef,
@@ -3257,11 +3273,7 @@ func (xRefTable *XRefTable) countPageTreeLeaves(
 	}
 
 	if pageType == "Page" {
-		if *n >= limit {
-			return fmt.Errorf("page tree obj#%d: more pages than the %d objects of the PDF", objNr, limit)
-		}
-		*n++
-		return nil
+		return xRefTable.countPageTreeLeaf(objNr, n, limit)
 	}
 
 	o, found := d.Find("Kids")
@@ -3308,7 +3320,9 @@ func (xRefTable *XRefTable) countPageTreeLeaves(
 // ignores the declared Count entries. It walks the page tree like
 // PageBoundaries and rejects page tree cycles, duplicate page tree nodes,
 // nesting beyond ResourceLimits.MaxRecursionDepth and more pages than the
-// cross-reference table has entries. It does not set PageCount.
+// cross-reference table has entries. More pages than ResourceLimits.MaxPageCount
+// stop the walk with a ResourceLimitError of kind LimitPages. It does not set
+// PageCount.
 func (xRefTable *XRefTable) CountPageTreeLeaves(c context.Context) (int, error) {
 	if err := contextutil.Check(c); err != nil {
 		return 0, err

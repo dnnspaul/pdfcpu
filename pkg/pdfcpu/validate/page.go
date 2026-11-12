@@ -1492,6 +1492,9 @@ func processPagesKids(c context.Context, xRefTable *model.XRefTable, kids types.
 			}
 
 		case "Page":
+			if err := xRefTable.CheckPageCount(*curPage + 1); err != nil {
+				return nil, err
+			}
 			recordRenditionPage(c, objNr)
 			*curPage++
 			xRefTable.CurPage = *curPage

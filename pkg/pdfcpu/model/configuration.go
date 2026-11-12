@@ -552,6 +552,13 @@ type ResourceLimits struct {
 	// notices of both runs. Notices added outside pdfcpu.Read and
 	// validate.XRefTable are counted but cannot stop a run.
 	MaxNotices int
+
+	// MaxPageCount limits the pages of a page tree. A page listed more than
+	// once in Kids counts each time. Validation, XRefTable.CountPageTreeLeaves
+	// and XRefTable.EnsurePageCount stop with a ResourceLimitError of kind
+	// LimitPages before the page past the limit is processed.
+	// Zero or negative means unlimited.
+	MaxPageCount int
 }
 
 // DecodeLimit returns the configured decoded-byte limit.
@@ -982,7 +989,7 @@ func NewRC4Configuration(userPW, ownerPW string, keyLength int) *Configuration {
 
 // NewTolerantConfiguration returns a default configuration for reading PDFs
 // from untrusted sources: relaxed validation, bounded object numbers and
-// notices, and removal of an invalid structure tree.
+// notices, a bounded page count, and removal of an invalid structure tree.
 // It is the configuration api.ReadAndValidateWithReport uses for a nil conf.
 func NewTolerantConfiguration() *Configuration {
 	c := NewDefaultConfiguration()
@@ -991,6 +998,7 @@ func NewTolerantConfiguration() *Configuration {
 	c.Limits.MaxObjectNumber = 8_388_607
 	c.Limits.MaxRetainedNotices = 1_000
 	c.Limits.MaxNotices = 250_000
+	c.Limits.MaxPageCount = 100_000
 	c.RemoveInvalidStructTree = true
 	return c
 }
