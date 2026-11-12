@@ -38,14 +38,15 @@ func (d Dict) Len() int {
 	return len(d)
 }
 
-// Clone returns a clone of d.
+// Clone returns a deep copy of d. Keys are copied verbatim; entries whose keys
+// decode to the same name are not merged.
 func (d Dict) Clone() Object {
-	d1 := NewDict()
+	d1 := make(Dict, len(d))
 	for k, v := range d {
 		if v != nil {
 			v = v.Clone()
 		}
-		d1.Insert(k, v)
+		d1[k] = v
 	}
 	return d1
 }
