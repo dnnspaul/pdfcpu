@@ -48,9 +48,10 @@ type Context struct {
 	Optimize          *OptimizationContext
 	Write             *WriteContext
 	validationReport  ValidationReport
-	WritingPages      bool // true, when writing page dicts.
-	Dest              bool // true when writing a destination within a page.
-	WritingAnnotation bool // WritingAnnotation tracks annotation context during writing.
+	WritingPages      bool         // true, when writing page dicts.
+	Dest              bool         // true when writing a destination within a page.
+	WritingAnnotation bool         // WritingAnnotation tracks annotation context during writing.
+	PageTreeNodes     map[int]bool // output page tree nodes, written by the page tree writer, and copies of input nodes; the object writer skips both.
 }
 
 // NewContext initializes a new Context.

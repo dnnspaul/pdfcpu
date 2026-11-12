@@ -214,6 +214,11 @@ type XRefTable struct {
 	UsedGIDs            map[string]map[uint16]bool
 	FillFonts           map[string]types.IndirectRef
 	decodedStreamBudget decodedStreamBudget
+
+	// InputPageTree caches the page tree nodes reachable from Root, for AddPages. It is nil
+	// until AddPages first needs it. Whoever changes the page tree of this table must set
+	// it to nil: InsertPages, AppendPages, page validation and merges do so.
+	InputPageTree *PageTreeIndex
 }
 
 // NewXRefTable creates a new XRefTable.
@@ -3923,11 +3928,17 @@ func (xRefTable *XRefTable) insertPagesDepth(c context.Context, parent *types.In
 	return i, nil
 }
 
+// PageTreeIndex holds the page tree nodes reachable from the root of an XRefTable.
+type PageTreeIndex struct {
+	Nodes map[int]bool // object numbers of the /Pages dicts reached through Kids from the root.
+}
+
 // InsertPages inserts pages from ctx into the page tree below parent.
 func (xRefTable *XRefTable) InsertPages(c context.Context, parent *types.IndirectRef, p *int, ctx *Context) (int, error) {
 	if err := contextutil.Check(c); err != nil {
 		return 0, err
 	}
+	xRefTable.InputPageTree = nil
 	return xRefTable.insertPagesDepth(c, parent, p, ctx, 0, NewPageTreeVisit())
 }
 
@@ -3936,6 +3947,7 @@ func (xRefTable *XRefTable) AppendPages(c context.Context, rootPageIndRef *types
 	if err := contextutil.Check(c); err != nil {
 		return 0, err
 	}
+	xRefTable.InputPageTree = nil
 	// Create an intermediary page node containing kids array with indRefs For all ctx Pages fromPageNr - end
 
 	rootPageDict, err := xRefTable.DereferenceDict(*rootPageIndRef)

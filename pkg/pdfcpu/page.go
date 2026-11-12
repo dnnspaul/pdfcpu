@@ -368,5 +368,49 @@ func AddPages(c context.Context, ctxSrc, ctxDest *model.Context, pageNrs []int, 
 		return fmt.Errorf("add pages: %w", err)
 	}
 
+	if err := recordInputPageTreeNodes(c, ctxSrc, ctxDest, migrated); err != nil {
+		return err
+	}
+
 	return finishAddedPages(c, ctxSrc, ctxDest, fieldsDest, migrated)
+}
+
+// recordInputPageTreeNodes records in ctxDest the copies of the page tree nodes of
+// ctxSrc that AddPages migrated. The output has its own page tree, so the writer
+// skips these copies too. Only the migrated objects are checked against the index
+// of the input page tree.
+func recordInputPageTreeNodes(c context.Context, ctxSrc, ctxDest *model.Context, migrated map[int]int) error {
+	idx, err := inputPageTreeIndex(c, ctxSrc.XRefTable)
+	if err != nil {
+		return fmt.Errorf("add pages: page tree nodes: %w", err)
+	}
+	for objNr, objNrDest := range migrated {
+		if !idx.Nodes[objNr] {
+			continue
+		}
+		if ctxDest.PageTreeNodes == nil {
+			ctxDest.PageTreeNodes = map[int]bool{}
+		}
+		ctxDest.PageTreeNodes[objNrDest] = true
+	}
+	return nil
+}
+
+// inputPageTreeIndex returns the index of the page tree nodes reachable from the root of
+// xRefTable. The index is built by one walk of the page tree and cached in xRefTable, so
+// a later AddPages call on the same source costs no walk. A node is reachable when the
+// walk reaches it through Kids, whatever its /Parent says. A /Pages dict that no Kids entry
+// reaches is an orphan and is not in the index. A missing or broken root gives an empty index.
+func inputPageTreeIndex(c context.Context, xRefTable *model.XRefTable) (*model.PageTreeIndex, error) {
+	if xRefTable.InputPageTree != nil {
+		return xRefTable.InputPageTree, nil
+	}
+	idx := &model.PageTreeIndex{Nodes: map[int]bool{}}
+	if rootIndRef, err := xRefTable.Pages(); err == nil && rootIndRef != nil {
+		if err := addPageTreeNodeObjNrs(c, xRefTable, *rootIndRef, 0, idx.Nodes, nil); err != nil {
+			return nil, err
+		}
+	}
+	xRefTable.InputPageTree = idx
+	return idx, nil
 }

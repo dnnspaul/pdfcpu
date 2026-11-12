@@ -19,6 +19,7 @@ package pdfcpu
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -637,15 +638,22 @@ func writeStreamDictObject(ctx *model.Context, objNr, genNr int, sd types.Stream
 	return nil
 }
 
+// writeDirectDict writes the objects of the entries of d in ascending key order, so that
+// repeated writes give the same object order.
 func writeDirectDict(c context.Context, ctx *model.Context, d types.Dict) error {
-	for k, v := range d {
+	keys := make([]string, 0, len(d))
+	for k := range d {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		if err := contextutil.Check(c); err != nil {
 			return err
 		}
 		if ctx.WritingPages && (k == "Dest" || k == "D") {
 			ctx.Dest = true
 		}
-		if _, _, err := writeAnnotationAwareEntry(c, ctx, d, k, v); err != nil {
+		if _, _, err := writeAnnotationAwareEntry(c, ctx, d, k, d[k]); err != nil {
 			return err
 		}
 		ctx.Dest = false
@@ -726,6 +734,15 @@ func writeDeepDict(c context.Context, ctx *model.Context, d types.Dict, objNr, g
 		if !valid {
 			return nil
 		}
+	}
+
+	// An output page tree node is written by writePagesDictDepth, once, with the kids
+	// selected for the output. A copy of an input page tree node, recorded by AddPages
+	// or a zip merge, is skipped too: writing it would repeat a node or keep input kids
+	// the output does not hold. Other /Pages dicts, such as an orphan, are written as
+	// plain dicts.
+	if ctx.PageTreeNodes[objNr] {
+		return nil
 	}
 
 	if err := writeDictObject(c, ctx, objNr, genNr, d); err != nil {

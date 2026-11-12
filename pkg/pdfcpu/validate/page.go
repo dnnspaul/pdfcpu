@@ -1742,6 +1742,7 @@ func validatePages(c context.Context, xRefTable *model.XRefTable, rootDict types
 	if err := contextutil.Check(c); err != nil {
 		return nil, err
 	}
+	xRefTable.InputPageTree = nil
 	rootObjNr := validationRootObjectNumber(xRefTable)
 	obj, found := rootDict.Find("Pages")
 	if !found {

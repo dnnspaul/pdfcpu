@@ -1661,6 +1661,7 @@ func appendSourcePageTreeToDestPageTree(c context.Context, ctxSrc, ctxDest *mode
 	addedPageCount += ctxSrc.PageCount
 
 	destRoot["Kids"] = destKids
+	ctxDest.InputPageTree = nil
 	destRoot["Count"] = types.Integer(ctxDest.PageCount + addedPageCount)
 	ctxDest.PageCount += addedPageCount
 
@@ -1700,6 +1701,23 @@ func zipSourcePageTreeIntoDestPageTree(c context.Context, ctxSrc, ctxDest *model
 		if ctxDest.PageCount, err = ctxDest.AppendPages(c, rootPageIndRef, appendFromPageNr, ctxSrc); err != nil {
 			return fmt.Errorf("zip page tree: append remaining source pages: %w", err)
 		}
+	}
+
+	// Unlike an append merge, the source page tree is not part of the output page tree.
+	// Its renumbered nodes are recorded, so the object writer skips them instead of
+	// writing them with the kids of the input.
+	srcPagesIndRef, err := ctxSrc.Pages()
+	if err != nil {
+		return fmt.Errorf("zip page tree: source pages entry: %w", err)
+	}
+	if srcPagesIndRef == nil {
+		return errors.New("zip page tree: missing source /Pages")
+	}
+	if ctxDest.PageTreeNodes == nil {
+		ctxDest.PageTreeNodes = map[int]bool{}
+	}
+	if err := addPageTreeNodeObjNrs(c, ctxSrc.XRefTable, *srcPagesIndRef, 0, ctxDest.PageTreeNodes, nil); err != nil {
+		return fmt.Errorf("zip page tree: record source nodes: %w", err)
 	}
 
 	if log.DebugEnabled() {

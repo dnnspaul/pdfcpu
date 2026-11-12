@@ -41,6 +41,109 @@ func writePageEntry(c context.Context, ctx *model.Context, d types.Dict, dictNam
 	return nil
 }
 
+// pageDictEntries are the page dict entries whose objects writePageDict writes, with their page stats.
+var pageDictEntries = []struct {
+	entryName string
+	statsAttr int
+}{
+	{"Contents", model.PageContents},
+	{"Resources", model.PageResources},
+	{"MediaBox", model.PageMediaBox},
+	{"CropBox", model.PageCropBox},
+	{"BleedBox", model.PageBleedBox},
+	{"TrimBox", model.PageTrimBox},
+	{"ArtBox", model.PageArtBox},
+	{"BoxColorInfo", model.PageBoxColorInfo},
+	{"PieceInfo", model.PagePieceInfo},
+	{"LastModified", model.PageLastModified},
+	{"Rotate", model.PageRotate},
+	{"Group", model.PageGroup},
+	{"Annots", model.PageAnnots},
+	{"Thumb", model.PageThumb},
+	{"B", model.PageB},
+	{"Dur", model.PageDur},
+	{"Trans", model.PageTrans},
+	{"AA", model.PageAA},
+	{"Metadata", model.PageMetadata},
+	{"StructParents", model.PageStructParents},
+	{"ID", model.PageID},
+	{"PZ", model.PagePZ},
+	{"SeparationInfo", model.PageSeparationInfo},
+	{"Tabs", model.PageTabs},
+	{"TemplateInstantiated", model.PageTemplateInstantiated},
+	{"PresSteps", model.PagePresSteps},
+	{"UserUnit", model.PageUserUnit},
+	{"VP", model.PageVP},
+	{"AF", model.PageAF},
+}
+
+// writeRemainingPageEntries writes the objects referenced by the page dict entries
+// that are not in pageDictEntries, such as /OutputIntents, /DPart and developer
+// extensions, the way writeRootObject writes the remaining catalog entries.
+// /Parent is skipped: it refers to the page tree node, which writePagesDictDepth
+// writes itself once its kids are known. Writing it here would emit that node
+// with the unselected kids, and writing it again later would duplicate it.
+func writeRemainingPageEntries(c context.Context, ctx *model.Context, pageDict types.Dict) error {
+	return writeRemainingDictEntries(c, ctx, pageDict, func(k string) bool {
+		return k == "Parent" || pageDictEntryListed(k)
+	})
+}
+
+// writeRemainingDictEntries writes the objects of the entries of d that skip does not
+// select, see writeDirectDict.
+func writeRemainingDictEntries(c context.Context, ctx *model.Context, d types.Dict, skip func(string) bool) error {
+	rest := types.NewDict()
+	for k, v := range d {
+		if !skip(k) {
+			rest[k] = v
+		}
+	}
+	return writeDirectDict(c, ctx, rest)
+}
+
+// addPageTreeNodeObjNrs adds the object numbers of the page tree nodes below the
+// reference ir to nodes. A node is entered once and only kids that are references
+// are followed, so a cyclic tree ends. Below the recursion limit the walk stops,
+// and the page tree writer reports the limit. Each dict the walk dereferences is
+// counted in visits, when visits is not nil. The walk fails only when c is cancelled.
+func addPageTreeNodeObjNrs(c context.Context, xRefTable *model.XRefTable, ir types.IndirectRef, depth int, nodes map[int]bool, visits *int) error {
+	if err := contextutil.Check(c); err != nil {
+		return err
+	}
+	objNr := ir.ObjectNumber.Value()
+	if nodes[objNr] || xRefTable.CheckRecursionDepth("page tree", depth) != nil {
+		return nil
+	}
+	if visits != nil {
+		*visits++
+	}
+	d, err := xRefTable.DereferenceDict(ir)
+	if err != nil || d == nil {
+		return nil
+	}
+	if t, _, err := xRefTable.DereferenceNameEntry(d, "Type"); err != nil || t == nil || t.Value() != "Pages" {
+		return nil
+	}
+	nodes[objNr] = true
+	for _, o := range d.ArrayEntry("Kids") {
+		if kir, ok := o.(types.IndirectRef); ok {
+			if err := addPageTreeNodeObjNrs(c, xRefTable, kir, depth+1, nodes, visits); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func pageDictEntryListed(name string) bool {
+	for _, e := range pageDictEntries {
+		if e.entryName == name {
+			return true
+		}
+	}
+	return false
+}
+
 func writePageDict(c context.Context, ctx *model.Context, indRef *types.IndirectRef, pageDict types.Dict, pageNr int) error {
 	if err := contextutil.Check(c); err != nil {
 		return err
@@ -75,45 +178,17 @@ func writePageDict(c context.Context, ctx *model.Context, indRef *types.Indirect
 
 	ctx.WritingPages = true
 
-	for _, e := range []struct {
-		entryName string
-		statsAttr int
-	}{
-		{"Contents", model.PageContents},
-		{"Resources", model.PageResources},
-		{"MediaBox", model.PageMediaBox},
-		{"CropBox", model.PageCropBox},
-		{"BleedBox", model.PageBleedBox},
-		{"TrimBox", model.PageTrimBox},
-		{"ArtBox", model.PageArtBox},
-		{"BoxColorInfo", model.PageBoxColorInfo},
-		{"PieceInfo", model.PagePieceInfo},
-		{"LastModified", model.PageLastModified},
-		{"Rotate", model.PageRotate},
-		{"Group", model.PageGroup},
-		{"Annots", model.PageAnnots},
-		{"Thumb", model.PageThumb},
-		{"B", model.PageB},
-		{"Dur", model.PageDur},
-		{"Trans", model.PageTrans},
-		{"AA", model.PageAA},
-		{"Metadata", model.PageMetadata},
-		{"StructParents", model.PageStructParents},
-		{"ID", model.PageID},
-		{"PZ", model.PagePZ},
-		{"SeparationInfo", model.PageSeparationInfo},
-		{"Tabs", model.PageTabs},
-		{"TemplateInstantiated", model.PageTemplateInstantiated},
-		{"PresSteps", model.PagePresSteps},
-		{"UserUnit", model.PageUserUnit},
-		{"VP", model.PageVP},
-	} {
+	for _, e := range pageDictEntries {
 		if err := contextutil.Check(c); err != nil {
 			return err
 		}
 		if err := writePageEntry(c, ctx, pageDict, dictName, e.entryName, e.statsAttr); err != nil {
 			return err
 		}
+	}
+
+	if err := writeRemainingPageEntries(c, ctx, pageDict); err != nil {
+		return err
 	}
 
 	ctx.WritingPages = false
@@ -314,6 +389,19 @@ func writePagesDictDepth(c context.Context, ctx *model.Context, indRef *types.In
 	}
 
 	if err := writePageEntries(c, ctx, d, dictName); err != nil {
+		return false, 0, err
+	}
+
+	// Entries the node writer does not list, such as a developer key, are written
+	// as for a page. Kids is written above, and Parent is the parent node, which
+	// writePagesDictDepth writes itself.
+	if err := writeRemainingDictEntries(c, ctx, d, func(k string) bool {
+		switch k {
+		case "Kids", "Parent", "Resources", "MediaBox", "CropBox", "Rotate":
+			return true
+		}
+		return false
+	}); err != nil {
 		return false, 0, err
 	}
 

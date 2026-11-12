@@ -1395,7 +1395,30 @@ func validateAF(xRefTable *model.XRefTable, rootDict types.Dict, required bool, 
 		return err
 	}
 
-	return model.WithValidationErrorObject(errors.New("PDF 2.0 associated files not supported"), afObjNr)
+	strictFailure := model.WithValidationErrorObject(errors.New("PDF 2.0 associated files not supported"), afObjNr)
+	if xRefTable.ValidationMode == model.ValidationStrict {
+		return strictFailure
+	}
+
+	// Relaxed: keep the array unchanged. Its entries shall be file specification dicts.
+	for i, o := range a {
+		objNr := validationObjectNumber(afObjNr, o)
+		d, err := xRefTable.DereferenceDict(o)
+		if err != nil {
+			return model.WithValidationErrorObject(fmt.Errorf("AF[%d]: %w", i, err), objNr)
+		}
+		if d == nil {
+			continue
+		}
+		if _, err := validateFileSpecificationWithoutLinkCollection(xRefTable, o); err != nil {
+			return fmt.Errorf("AF[%d]: %w", i, err)
+		}
+	}
+
+	notice := model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, strictFailure.Error(), strictFailure)
+	notice.Path = "AF"
+	xRefTable.AddValidationNotice(notice)
+	return nil
 }
 
 func validateDPartRoot(xRefTable *model.XRefTable, rootDict types.Dict, required bool, sinceVersion model.Version) error {

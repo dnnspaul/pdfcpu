@@ -322,6 +322,14 @@ func writePages(c context.Context, ctx *model.Context, rootDict types.Dict) erro
 	// Embed all page tree objects into objects stream.
 	ctx.Write.WriteToObjectStream = true
 
+	// The nodes of the output page tree are written below, once each.
+	if ctx.PageTreeNodes == nil {
+		ctx.PageTreeNodes = map[int]bool{}
+	}
+	if err := addPageTreeNodeObjNrs(c, ctx.XRefTable, *indRef, 0, ctx.PageTreeNodes, nil); err != nil {
+		return err
+	}
+
 	// Write page tree.
 	p := 0
 	if _, _, err := writePagesDict(c, ctx, indRef, &p); err != nil {

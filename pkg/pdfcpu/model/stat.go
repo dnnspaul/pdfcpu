@@ -85,6 +85,7 @@ const (
 	PagePresSteps
 	PageUserUnit
 	PageVP
+	PageAF
 )
 
 // PDFStats is a container for stats.

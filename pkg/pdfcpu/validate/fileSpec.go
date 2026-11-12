@@ -471,15 +471,41 @@ func validateFileSpecDictPart2(xRefTable *model.XRefTable, d types.Dict, ownerOb
 		}
 		return types.MemberOf(s, []string{"Source", "Data", "Alternative", "Supplement", "EncryptedPayload", "FormData", "Schema", "Unspecified"})
 	}
+	relaxed := xRefTable.ValidationMode == model.ValidationRelaxed
 	sinceVersion = model.V20
-	if xRefTable.ValidationMode == model.ValidationRelaxed {
-		sinceVersion = model.V14
+	if relaxed {
+		sinceVersion = model.V10
 	}
-	if _, err := validateNameEntry(xRefTable, d, 0, dictName, "AFRelationship", OPTIONAL, sinceVersion, validateAFRelationship); err != nil {
+	afr, err := validateNameEntry(xRefTable, d, 0, dictName, "AFRelationship", OPTIONAL, sinceVersion, validateAFRelationship)
+	if err != nil {
 		return err
+	}
+	if afr != nil && relaxed && xRefTable.Version() < model.V14 {
+		digestAFRelationshipVersion(xRefTable, d, ownerObjNr, dictName)
 	}
 
 	return nil
+}
+
+// digestKindAFRelationshipVersion is the MarkDigested kind of the notice for an
+// AFRelationship entry in a file specification of a PDF before version 1.4.
+const digestKindAFRelationshipVersion = "afRelationshipVersion"
+
+// digestAFRelationshipVersion records the relaxed mode notice for the AFRelationship entry
+// of the file specification d, owned by ownerObjNr, in a PDF before version 1.4.
+// Relaxed validation accepts AFRelationship since 1.4. PDF/A-3 attachments, such as
+// ZUGFeRD and Factur-X invoices, carry it also in files that declare version 1.3.
+// A file specification shared by several owners is validated once per owner,
+// so the notice is recorded once per object.
+func digestAFRelationshipVersion(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, dictName string) {
+	objNr := validationEntryObjectNumber(ownerObjNr, d, "AFRelationship")
+	if objNr > 0 && !xRefTable.MarkDigested(digestKindAFRelationshipVersion, objNr) {
+		return
+	}
+	err := model.WithValidationErrorObject(xRefTable.ValidateVersion("dict="+dictName+" entry=AFRelationship", model.V14), objNr)
+	notice := model.NewValidationNotice(model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err)
+	notice.ActualVersion, notice.RequiredVersion, notice.HasVersions = xRefTable.Version(), model.V14, true
+	xRefTable.AddValidationNotice(notice)
 }
 
 func validateFileSpecDict(xRefTable *model.XRefTable, d types.Dict, ownerObjNr int, collectURL bool) (err error) {
