@@ -2362,9 +2362,11 @@ func (xRefTable *XRefTable) PageContent(d types.Dict, pageNr int) ([]byte, error
 	return bb, nil
 }
 
-func (xRefTable *XRefTable) consolidateResourceSubDict(d types.Dict, key string, prn PageResourceNames, pageNr int) error {
+func (xRefTable *XRefTable) consolidateResourceSubDict(d types.Dict, key string, prn PageResourceNames, pageNr int, trim bool) error {
 	if !prn.HasResources(key) {
-		d.Delete(key)
+		if trim {
+			d.Delete(key)
+		}
 		return nil
 	}
 	d1, err := xRefTable.DereferenceDict(d[key])
@@ -2395,7 +2397,9 @@ func (xRefTable *XRefTable) consolidateResourceSubDict(d types.Dict, key string,
 	for k := range d1 {
 		ki := types.Name(k).Value()
 		if !res[ki] {
-			d1.Delete(k)
+			if trim {
+				d1.Delete(k)
+			}
 			continue
 		}
 		set[ki] = true
@@ -2414,13 +2418,210 @@ func (xRefTable *XRefTable) consolidateResourceSubDict(d types.Dict, key string,
 	return nil
 }
 
-func (xRefTable *XRefTable) consolidateResourceDict(d types.Dict, prn PageResourceNames, pageNr int) error {
+// consolidateResourceDictTrim keeps the resources of d the content names. Other
+// resources are removed only if trim is set, see namedResourcesSelfContained.
+func (xRefTable *XRefTable) consolidateResourceDictTrim(d types.Dict, prn PageResourceNames, pageNr int, trim bool) error {
 	for _, k := range resourceTypes {
-		if err := xRefTable.consolidateResourceSubDict(d, k, prn, pageNr); err != nil {
+		if err := xRefTable.consolidateResourceSubDict(d, k, prn, pageNr, trim); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// nestedResourceKeys are the resource types whose entries can draw with names
+// of the resource dictionary they are in.
+var nestedResourceKeys = []string{"XObject", "Pattern", "Font", "ExtGState"}
+
+// resourceVisit identifies an indirect resource of a resource type, or the Resources
+// dictionary of a drawing resource with the key "Resources", so that each one is
+// checked once.
+type resourceVisit struct {
+	key   string
+	objNr int
+}
+
+// usesPageResources reports whether resource o of type key may use names of the
+// page's resources. A form XObject, tiling pattern, Type 3 font or soft mask group
+// draws with the page's resources when it has no Resources of its own. When it has
+// some, its own resources are checked too, since its content is not read here.
+func (xRefTable *XRefTable) usesPageResources(key string, o types.Object, depth int, visited map[resourceVisit]bool) bool {
+	o, err := xRefTable.Dereference(o)
+	if err != nil {
+		return true
+	}
+	draws := false
+	var res types.Object
+	switch key {
+	case "XObject":
+		sd, ok := o.(types.StreamDict)
+		if !ok {
+			return false
+		}
+		subtype := sd.NameEntry("Subtype")
+		_, hasBBox := sd.Find("BBox")
+		if (subtype != nil && *subtype == "Form") || (subtype == nil && hasBBox) {
+			draws, res = true, sd.Dict["Resources"]
+		}
+	case "Pattern":
+		if sd, ok := o.(types.StreamDict); ok {
+			draws, res = true, sd.Dict["Resources"]
+		}
+	case "Font":
+		if d, ok := o.(types.Dict); ok {
+			if subtype := d.NameEntry("Subtype"); subtype != nil && *subtype == "Type3" {
+				draws, res = true, d["Resources"]
+			}
+		}
+	case "ExtGState":
+		d, ok := o.(types.Dict)
+		if !ok {
+			return false
+		}
+		sm, err := xRefTable.Dereference(d["SMask"])
+		if err != nil {
+			return true
+		}
+		smd, ok := sm.(types.Dict)
+		if !ok {
+			return false
+		}
+		g, err := xRefTable.Dereference(smd["G"])
+		if err != nil {
+			return true
+		}
+		if sd, ok := g.(types.StreamDict); ok {
+			draws, res = true, sd.Dict["Resources"]
+		}
+	}
+	if !draws {
+		return false
+	}
+	return xRefTable.ownResourcesUsePageNames(res, depth, visited)
+}
+
+// ownResourcesUsePageNames reports whether a drawing resource whose Resources entry is
+// res may use names of the page's resources. A missing or unreadable entry is such a use.
+func (xRefTable *XRefTable) ownResourcesUsePageNames(res types.Object, depth int, visited map[resourceVisit]bool) bool {
+	if ir, ok := res.(types.IndirectRef); ok {
+		rv := resourceVisit{key: "Resources", objNr: ir.ObjectNumber.Value()}
+		if visited[rv] {
+			return false
+		}
+		visited[rv] = true
+	}
+	r, err := xRefTable.Dereference(res)
+	if err != nil {
+		return true
+	}
+	rd, ok := r.(types.Dict)
+	if !ok {
+		return true
+	}
+	return xRefTable.resourcesUsePageNames(rd, depth+1, visited)
+}
+
+// resourcesUsePageNames reports whether any entry of the resource dictionary res may use
+// names of the page's resources, see usesPageResources.
+func (xRefTable *XRefTable) resourcesUsePageNames(res types.Dict, depth int, visited map[resourceVisit]bool) bool {
+	if err := xRefTable.CheckRecursionDepth("resources", depth); err != nil {
+		return true
+	}
+	for _, key := range nestedResourceKeys {
+		d, err := xRefTable.DereferenceDict(res[key])
+		if err != nil {
+			return true
+		}
+		for _, v := range d {
+			if xRefTable.resourceUsesPageNames(key, v, depth, visited) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resourceUsesPageNames is usesPageResources for an entry of a resource dictionary.
+// An indirect resource that was already checked is not checked again.
+func (xRefTable *XRefTable) resourceUsesPageNames(key string, v types.Object, depth int, visited map[resourceVisit]bool) bool {
+	if ir, ok := v.(types.IndirectRef); ok {
+		rv := resourceVisit{key: key, objNr: ir.ObjectNumber.Value()}
+		if visited[rv] {
+			return false
+		}
+		visited[rv] = true
+	}
+	return xRefTable.usesPageResources(key, v, depth, visited)
+}
+
+// namedResourcesSelfContained reports whether the resources in d that the
+// page content names in prn resolve their own names. Only then are the
+// resources the content does not name unused, and safe to trim.
+func (xRefTable *XRefTable) namedResourcesSelfContained(d types.Dict, prn PageResourceNames) bool {
+	visited := map[resourceVisit]bool{}
+	for _, key := range nestedResourceKeys {
+		if !prn.HasResources(key) {
+			continue
+		}
+		d1, err := xRefTable.DereferenceDict(d[key])
+		if err != nil {
+			return false
+		}
+		res := prn.Resources(key)
+		for k, v := range d1 {
+			if res[types.Name(k).Value()] && xRefTable.resourceUsesPageNames(key, v, 0, visited) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// annotationsUsePageNames reports whether an appearance stream of the page's annotations
+// may use names of the page's resources. The appearance streams of /AP N, R and D are
+// checked, and those of the state dictionaries in them, as for a form XObject. A stream
+// without Resources draws with the page's resources, so it is such a use.
+func (xRefTable *XRefTable) annotationsUsePageNames(pageDict types.Dict) bool {
+	annots, err := xRefTable.DereferenceArray(pageDict["Annots"])
+	if err != nil {
+		return true
+	}
+	visited := map[resourceVisit]bool{}
+	for _, o := range annots {
+		annot, err := xRefTable.DereferenceDict(o)
+		if err != nil {
+			return true
+		}
+		ap, err := xRefTable.DereferenceDict(annot["AP"])
+		if err != nil {
+			return true
+		}
+		for _, k := range []string{"N", "R", "D"} {
+			v, err := xRefTable.Dereference(ap[k])
+			if err != nil {
+				return true
+			}
+			var streams []types.Object
+			switch v := v.(type) {
+			case types.StreamDict:
+				streams = append(streams, v)
+			case types.Dict:
+				for _, state := range v {
+					streams = append(streams, state)
+				}
+			}
+			for _, s := range streams {
+				sd, err := xRefTable.Dereference(s)
+				if err != nil {
+					return true
+				}
+				if st, ok := sd.(types.StreamDict); ok && xRefTable.ownResourcesUsePageNames(st.Dict["Resources"], 0, visited) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (xRefTable *XRefTable) pageContentContext(pageDict types.Dict) string {
@@ -2486,8 +2687,10 @@ func (xRefTable *XRefTable) consolidateResourcesWithContent(c context.Context, p
 	// Compare required resources (prn) with available resources (pAttrs.resources).
 	// Remove any resource that's not required.
 	// Return an error for any required resource missing.
-	// TODO Calculate and accumulate resources required by content streams of any present form or type 3 fonts.
-	if err := xRefTable.consolidateResourceDict(resDict, prn, pageNr); err != nil {
+	// Resources not named by the content are removed only if every named resource resolves its own names,
+	// see namedResourcesSelfContained, and no appearance stream of the page's annotations needs the page's names.
+	trim := xRefTable.namedResourcesSelfContained(resDict, prn) && !xRefTable.annotationsUsePageNames(pageDict)
+	if err := xRefTable.consolidateResourceDictTrim(resDict, prn, pageNr, trim); err != nil {
 		return fmt.Errorf("resource dict: %w", err)
 	}
 	return nil

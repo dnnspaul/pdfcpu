@@ -69,7 +69,7 @@ func TestConsolidateResourceSubDictDereferencesCategory(t *testing.T) {
 			if tc.required {
 				prn["Properties"]["P1"] = true
 			}
-			err := xRefTable.consolidateResourceSubDict(d, "Properties", prn, 1)
+			err := xRefTable.consolidateResourceSubDict(d, "Properties", prn, 1, true)
 			if tc.wantMissing && (err == nil || !strings.Contains(err.Error(), "missing required Properties resource dictionary")) {
 				t.Fatalf("expected missing resource error, got %v", err)
 			}

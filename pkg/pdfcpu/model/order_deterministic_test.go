@@ -82,6 +82,12 @@ func TestConsolidateResourcesSelectsLowestDictionaryKey(t *testing.T) {
 	}
 }
 
+// consolidateTestResourceDict is consolidateResourceDictTrim with the trim decision of
+// namedResourcesSelfContained. Tests use it because the page path adds the annotation check.
+func consolidateTestResourceDict(xRefTable *XRefTable, d types.Dict, prn PageResourceNames, pageNr int) error {
+	return xRefTable.consolidateResourceDictTrim(d, prn, pageNr, xRefTable.namedResourcesSelfContained(d, prn))
+}
+
 func missingResourceNames() PageResourceNames {
 	prn := NewPageResourceNames()
 	prn["Font"]["Zulu"] = true
@@ -94,7 +100,7 @@ func TestConsolidateResourceDictSelectsLowestResourceName(t *testing.T) {
 	xRefTable.ValidationMode = ValidationStrict
 	d := types.Dict{"Font": types.Dict{}}
 	for range 25 {
-		err := xRefTable.consolidateResourceDict(d, missingResourceNames(), 1)
+		err := consolidateTestResourceDict(xRefTable, d, missingResourceNames(), 1)
 		if err == nil || !strings.Contains(err.Error(), "missing required Font: Alpha") {
 			t.Fatalf("expected Alpha resource error, got %v", err)
 		}
@@ -108,7 +114,7 @@ func TestConsolidateResourceDictPreservesCategoryPriority(t *testing.T) {
 	prn["Font"]["F1"] = true
 	prn["ColorSpace"]["CS1"] = true
 
-	err := xRefTable.consolidateResourceDict(types.Dict{}, prn, 1)
+	err := consolidateTestResourceDict(xRefTable, types.Dict{}, prn, 1)
 	if err == nil || !strings.Contains(err.Error(), "missing required ColorSpace resource dictionary") {
 		t.Fatalf("expected ColorSpace category error, got %v", err)
 	}
@@ -121,7 +127,7 @@ func TestConsolidateResourceDictReportsWarningsDeterministically(t *testing.T) {
 
 	xRefTable := newXRefTable(NewDefaultConfiguration())
 	xRefTable.ValidationMode = ValidationRelaxed
-	if err := xRefTable.consolidateResourceDict(types.Dict{"Font": types.Dict{}}, missingResourceNames(), 1); err != nil {
+	if err := consolidateTestResourceDict(xRefTable, types.Dict{"Font": types.Dict{}}, missingResourceNames(), 1); err != nil {
 		t.Fatal(err)
 	}
 
