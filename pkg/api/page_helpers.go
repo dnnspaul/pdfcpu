@@ -104,11 +104,12 @@ func pageTreeFailure(c context.Context, ctx *model.Context, err error) error {
 // ctx's Dests name tree that do not point to an extracted page are removed.
 //
 // The first error of digestPage stops the extraction and is returned wrapped.
-// A panic is recovered and returned as *PanicError. ctx may be used by one
-// goroutine at a time.
-func ExtractPagesContext(c context.Context, ctx *model.Context, selectedPages []string, digestPage func(io.Reader, int) error) (err error) {
-	defer catchPanic(&err)
-
+// digestPage is the caller's code and is not recovered: a panic in digestPage
+// propagates to the caller unchanged and is not a *PanicError, so it does not
+// make IsDeterministicFailure report the input as damaged. A panic in the
+// extraction of pdfcpu is recovered and returned as *PanicError. ctx may be
+// used by one goroutine at a time.
+func ExtractPagesContext(c context.Context, ctx *model.Context, selectedPages []string, digestPage func(io.Reader, int) error) error {
 	if err := contextutil.Check(c); err != nil {
 		return err
 	}
@@ -119,16 +120,16 @@ func ExtractPagesContext(c context.Context, ctx *model.Context, selectedPages []
 		return fmt.Errorf("extract pages: %w", ErrMissingDigestFunction)
 	}
 
-	pages, err := PagesForSelection(ctx.PageCount, selectedPages, true)
+	pages, err := selectExtractPages(ctx, selectedPages)
 	if err != nil {
-		return fmt.Errorf("extract pages: parse page selection: %w", err)
+		return err
 	}
 
-	for _, pageNr := range sortedPages(pages) {
+	for _, pageNr := range pages {
 		if err := contextutil.Check(c); err != nil {
 			return err
 		}
-		rd, err := ExtractPage(c, ctx, pageNr)
+		rd, err := extractPageRecovered(c, ctx, pageNr)
 		if err != nil {
 			return fmt.Errorf("extract pages: %w", err)
 		}
@@ -138,4 +139,28 @@ func ExtractPagesContext(c context.Context, ctx *model.Context, selectedPages []
 	}
 
 	return contextutil.Check(c)
+}
+
+// selectExtractPages returns the ascending page numbers selected for ExtractPagesContext.
+// A panic is recovered and returned as *PanicError.
+func selectExtractPages(ctx *model.Context, selectedPages []string) (pages []int, err error) {
+	defer catchPanic(&err)
+
+	selected, err := PagesForSelection(ctx.PageCount, selectedPages, true)
+	if err != nil {
+		return nil, fmt.Errorf("extract pages: parse page selection: %w", err)
+	}
+	return sortedPages(selected), nil
+}
+
+// extractPageFn is ExtractPage. Tests replace it to make the extraction panic.
+var extractPageFn = ExtractPage
+
+// extractPageRecovered extracts page pageNr of ctx like ExtractPage.
+// A panic is recovered and returned as *PanicError. It does not cover the digest
+// callback of ExtractPagesContext, which must not be recovered.
+func extractPageRecovered(c context.Context, ctx *model.Context, pageNr int) (rd io.Reader, err error) {
+	defer catchPanic(&err)
+
+	return extractPageFn(c, ctx, pageNr)
 }

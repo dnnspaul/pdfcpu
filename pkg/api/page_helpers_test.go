@@ -419,7 +419,7 @@ func TestExtractPagesContextSelection(t *testing.T) {
 	}
 }
 
-// TestExtractPagesContextStops pins that a digest error, a cancellation and a panic stop the extraction.
+// TestExtractPagesContextStops pins that a digest error, a cancellation and a panic of pdfcpu stop the extraction.
 func TestExtractPagesContextStops(t *testing.T) {
 	digestErr := errors.New("storage full")
 	var calls []int
@@ -446,12 +446,16 @@ func TestExtractPagesContextStops(t *testing.T) {
 		t.Errorf("cancel: got %v after %v", err, calls)
 	}
 
-	err = ExtractPagesContext(context.Background(), pageHelpersRead(t, pageHelpersTreePDF()), nil, func(io.Reader, int) error {
-		panic("secret panic text")
+	// A validated context without its XRefTable makes pdfcpu panic while it selects the pages.
+	noXRef := pageHelpersRead(t, pageHelpersTreePDF())
+	noXRef.XRefTable = nil
+	err = ExtractPagesContext(context.Background(), noXRef, nil, func(io.Reader, int) error {
+		t.Error("digest called after a pdfcpu panic")
+		return nil
 	})
 	var panicErr *PanicError
-	if !errors.As(err, &panicErr) || panicErr.Value() != "secret panic text" {
-		t.Errorf("panic: got %v", err)
+	if !errors.As(err, &panicErr) {
+		t.Errorf("pdfcpu panic: got %v, want *PanicError", err)
 	}
 
 	if err := ExtractPagesContext(context.Background(), nil, nil, func(io.Reader, int) error { return nil }); !errors.Is(err, ErrMissingPDFContext) {
@@ -459,6 +463,40 @@ func TestExtractPagesContextStops(t *testing.T) {
 	}
 	if err := ExtractPagesContext(context.Background(), pageHelpersRead(t, failureTestValidPDF()), nil, nil); !errors.Is(err, ErrMissingDigestFunction) {
 		t.Errorf("nil digest: got %v", err)
+	}
+}
+
+// TestExtractPagesContextDigestPanicPropagates pins that a panic in the digest callback propagates to the
+// caller unchanged and is not a *PanicError, which IsDeterministicFailure would report as a damaged PDF.
+func TestExtractPagesContextDigestPanicPropagates(t *testing.T) {
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_ = ExtractPagesContext(context.Background(), pageHelpersRead(t, pageHelpersTreePDF()), nil, func(io.Reader, int) error {
+			panic("caller panic text")
+		})
+	}()
+	if recovered != "caller panic text" {
+		t.Fatalf("got recovered %#v, want the digest panic value", recovered)
+	}
+}
+
+// TestExtractPagesContextExtractPanicRecovered pins that a panic inside pdfcpu's page extraction is
+// recovered as *PanicError and stops the extraction before the digest callback runs.
+func TestExtractPagesContextExtractPanicRecovered(t *testing.T) {
+	orig := extractPageFn
+	extractPageFn = func(context.Context, *model.Context, int) (io.Reader, error) {
+		panic("extract panic text")
+	}
+	t.Cleanup(func() { extractPageFn = orig })
+
+	err := ExtractPagesContext(context.Background(), pageHelpersRead(t, pageHelpersTreePDF()), nil, func(io.Reader, int) error {
+		t.Error("digest called after a panic in page extraction")
+		return nil
+	})
+	var panicErr *PanicError
+	if !errors.As(err, &panicErr) {
+		t.Errorf("extract panic: got %v, want *PanicError", err)
 	}
 }
 
