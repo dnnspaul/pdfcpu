@@ -685,6 +685,77 @@ func (n *Node) Process(c context.Context, xRefTable *XRefTable, handler func(*XR
 	return nil
 }
 
+// FilteredCopy returns a new name tree holding the entries of n for which keep
+// reports true, each with the value keep returns, and supports cancellation.
+// The copy keeps the order, the key bytes and the node structure of n, without
+// the nodes left with no entries; its root is kept even when it is empty. keep
+// sees the entries in key order and must not change the value it gets: n and
+// its values stay unchanged, so a copy that needs a changed value is returned.
+// Every node of the copy has a new dict, so binding the copy into an XRefTable
+// does not change the dicts of n.
+func (n *Node) FilteredCopy(c context.Context, keep func(k string, v types.Object) (types.Object, bool, error)) (*Node, error) {
+	type frame struct{ src, dst *Node }
+	root := &Node{D: types.NewDict()}
+	stack := []frame{{n, root}}
+	// Nodes of the copy, every node before its kids.
+	var nodes []*Node
+	for len(stack) > 0 {
+		if err := contextutil.Check(c); err != nil {
+			return nil, err
+		}
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		nodes = append(nodes, f.dst)
+		if f.src == nil {
+			continue
+		}
+		for _, e := range f.src.Names {
+			if err := contextutil.Check(c); err != nil {
+				return nil, err
+			}
+			v, ok, err := keep(e.k, e.v)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				f.dst.Names = append(f.dst.Names, entry{k: e.k, v: v, raw: e.raw})
+			}
+		}
+		if len(f.src.Kids) == 0 {
+			continue
+		}
+		f.dst.Kids = make([]*Node, len(f.src.Kids))
+		for i := range f.src.Kids {
+			f.dst.Kids[i] = &Node{}
+		}
+		for i := len(f.src.Kids) - 1; i >= 0; i-- {
+			stack = append(stack, frame{f.src.Kids[i], f.dst.Kids[i]})
+		}
+	}
+
+	// Kids come after their parent in nodes, so this drops empty nodes bottom up.
+	for i := len(nodes) - 1; i >= 0; i-- {
+		d := nodes[i]
+		if len(d.Kids) > 0 {
+			kids := d.Kids[:0]
+			for _, kid := range d.Kids {
+				if len(kid.Kids) > 0 || len(kid.Names) > 0 {
+					kid.D = types.NewDict()
+					kids = append(kids, kid)
+				}
+			}
+			d.Kids = kids
+		}
+		switch {
+		case len(d.Kids) > 0:
+			d.Kmin, d.Kmax = d.Kids[0].Kmin, d.Kids[len(d.Kids)-1].Kmax
+		case len(d.Names) > 0:
+			d.Kmin, d.Kmax = d.Names[0].k, d.Names[len(d.Names)-1].k
+		}
+	}
+	return root, nil
+}
+
 // KeyList returns a sorted list of all keys and supports cancellation.
 func (n Node) KeyList(c context.Context) ([]string, error) {
 	list := []string{}

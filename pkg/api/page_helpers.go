@@ -109,8 +109,8 @@ func pageTreeFailure(c context.Context, ctx *model.Context, err error) error {
 // not read again. Page selection and output are those of ExtractPages, and
 // each page is extracted exactly as ExtractPage(c, ctx, pageNr) would.
 //
-// Like a loop over ExtractPage, extraction changes ctx: named destinations of
-// ctx's Dests name tree that do not point to an extracted page are removed.
+// Extraction does not change the named destinations of ctx: every page keeps
+// the named destinations that point to it, as when extracted from a fresh read.
 //
 // The first error of digestPage stops the extraction and is returned wrapped.
 // digestPage is the caller's code and is not recovered: a panic in digestPage

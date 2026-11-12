@@ -818,7 +818,7 @@ func TestMigrateNamedDestsErrorsIncludeKeyContext(t *testing.T) {
 	n := &model.Node{}
 	n.AppendToNames("badDest", types.Integer(1))
 
-	err = migrateNamedDests(t.Context(), ctx, n, map[int]int{})
+	_, err = migrateNamedDests(t.Context(), ctx, n, map[int]int{})
 	if err == nil {
 		t.Fatal("expected error")
 	}

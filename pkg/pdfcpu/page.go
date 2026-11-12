@@ -224,81 +224,78 @@ func destinationPageMigrated(arr types.Array, migrated map[int]int) bool {
 	return !ok || migrated[indRef.ObjectNumber.Value()] > 0
 }
 
-func migrateNamedDestArray(arr types.Array, migrated map[int]int) bool {
+// migrateNamedDestArray returns a copy of the destination array arr pointing
+// to the migrated page, or false if arr does not point to a migrated page.
+func migrateNamedDestArray(arr types.Array, migrated map[int]int) (types.Array, bool) {
 	if len(arr) == 0 || !destinationPageMigrated(arr, migrated) {
-		return false
+		return nil, false
 	}
+	arr = arr.Clone().(types.Array)
 	arr[0] = patchObject(arr[0], migrated)
-	return true
+	return arr, true
 }
 
-func migrateNamedDestValue(xRefTable *model.XRefTable, v *types.Object, migrated map[int]int) (bool, error) {
+// migrateNamedDestValue returns a copy of the named destination v, a
+// destination array or a dict with a D array, pointing to the migrated page,
+// or false if v does not point to a migrated page. v is not changed.
+func migrateNamedDestValue(xRefTable *model.XRefTable, v types.Object, migrated map[int]int) (types.Object, bool, error) {
 	// destination array
-	arr, err := xRefTable.DereferenceArray(*v)
+	arr, err := xRefTable.DereferenceArray(v)
 	if err == nil {
-		if !migrateNamedDestArray(arr, migrated) {
-			return false, nil
+		arr, ok := migrateNamedDestArray(arr, migrated)
+		if !ok {
+			return nil, false, nil
 		}
-		*v = arr
-		return true, nil
+		return arr, true, nil
 	}
 
 	// destination dict with a D array.
-	d, err := xRefTable.DereferenceDict(*v)
+	d, err := xRefTable.DereferenceDict(v)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 
-	arr = d.ArrayEntry("D")
-	if !migrateNamedDestArray(arr, migrated) {
-		return false, nil
+	arr, ok := migrateNamedDestArray(d.ArrayEntry("D"), migrated)
+	if !ok {
+		return nil, false, nil
 	}
-	*v = d
-	return true, nil
+	d = d.Clone().(types.Dict)
+	d["D"] = arr
+	return d, true, nil
 }
 
-func migrateNamedDests(c context.Context, ctxSrc *model.Context, n *model.Node, migrated map[int]int) error {
+// migrateNamedDests returns a copy of the named destinations n of ctxSrc
+// holding the destinations that point to migrated pages, patched to point to
+// the migrated page objects. n and the objects of ctxSrc are not changed, so
+// later extractions from ctxSrc see all of its named destinations.
+func migrateNamedDests(c context.Context, ctxSrc *model.Context, n *model.Node, migrated map[int]int) (*model.Node, error) {
 	if err := requireContextWithXRefTable(ctxSrc); err != nil {
-		return fmt.Errorf("source context: %w", err)
+		return nil, fmt.Errorf("source context: %w", err)
 	}
 	if n == nil {
-		return errors.New("missing named destinations")
+		return nil, errors.New("missing named destinations")
 	}
 	if migrated == nil {
-		return errors.New("missing migration map")
+		return nil, errors.New("missing migration map")
 	}
 
-	var remove []string
-
-	patchValues := func(xRefTable *model.XRefTable, k string, v *types.Object) error {
+	keep := func(k string, v types.Object) (types.Object, bool, error) {
 		if v == nil {
-			return fmt.Errorf("named destination %q: missing value", k)
+			// Keep a corrupt entry as is.
+			return nil, true, nil
 		}
-		if *v == nil {
-			// Skip corrupt node.
-			return nil
-		}
-		keep, err := migrateNamedDestValue(xRefTable, v, migrated)
+		v, ok, err := migrateNamedDestValue(ctxSrc.XRefTable, v, migrated)
 		if err != nil {
-			return fmt.Errorf("named destination %q: %w", k, err)
+			return nil, false, fmt.Errorf("named destination %q: %w", k, err)
 		}
-		if !keep {
-			remove = append(remove, k)
-		}
-		return nil
+		return v, ok, nil
 	}
 
-	if err := n.Process(c, ctxSrc.XRefTable, patchValues); err != nil {
-		return fmt.Errorf("process named destinations: %w", err)
+	dests, err := n.FilteredCopy(c, keep)
+	if err != nil {
+		return nil, fmt.Errorf("process named destinations: %w", err)
 	}
-
-	for _, k := range remove {
-		if _, _, err := n.Remove(c, ctxSrc.XRefTable, k); err != nil {
-			return fmt.Errorf("remove named destination %q: %w", k, err)
-		}
-	}
-
-	return nil
+	return dests, nil
 }
 
 func finishAddedPages(c context.Context, ctxSrc, ctxDest *model.Context, fieldsDest types.Array, migrated map[int]int) error {
@@ -318,10 +315,11 @@ func finishAddedPages(c context.Context, ctxSrc, ctxDest *model.Context, fieldsD
 	}
 	if n, ok := ctxSrc.Names["Dests"]; ok {
 		// Carry over used named destinations.
-		if err := migrateNamedDests(c, ctxSrc, n, migrated); err != nil {
+		dests, err := migrateNamedDests(c, ctxSrc, n, migrated)
+		if err != nil {
 			return fmt.Errorf("add pages: migrate named destinations: %w", err)
 		}
-		ctxDest.Names = map[string]*model.Node{"Dests": n}
+		ctxDest.Names = map[string]*model.Node{"Dests": dests}
 	}
 
 	return nil

@@ -607,3 +607,123 @@ func TestExtractPagesContextReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// pageHelpersNamedDestsTreePDF builds a four page PDF whose Dests name tree has two leaves and holds
+// destination arrays and a destination dict, direct and as indirect objects, for every page.
+func pageHelpersNamedDestsTreePDF() []byte {
+	return failureTestPDF(
+		"<< /Type /Catalog /Pages 2 0 R /Names << /Dests 7 0 R >> >>",
+		"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R] /Count 4 /MediaBox [0 0 595 842] >>",
+		"<< /Type /Page /Parent 2 0 R >>",
+		"<< /Type /Page /Parent 2 0 R >>",
+		"<< /Type /Page /Parent 2 0 R >>",
+		"<< /Type /Page /Parent 2 0 R >>",
+		"<< /Kids [8 0 R 9 0 R] >>",
+		"<< /Limits [(a) (c)] /Names [(a) [3 0 R /Fit] (b) 10 0 R (c) << /D [5 0 R /XYZ 0 0 0] >>] >>",
+		"<< /Limits [(d) (e)] /Names [(d) 11 0 R (e) [3 0 R /FitH 10]] >>",
+		"[4 0 R /Fit]",
+		"<< /D [6 0 R /Fit] >>",
+	)
+}
+
+// pageHelpersDests returns the named destinations of the PDF data as name -> page number.
+func pageHelpersDests(t *testing.T, data []byte) map[string]int {
+	t.Helper()
+	ctx := pageHelpersRead(t, data)
+	dests := map[string]int{}
+	n := ctx.Names["Dests"]
+	if n == nil {
+		return dests
+	}
+	if err := n.Process(context.Background(), ctx.XRefTable, func(x *model.XRefTable, k string, v *types.Object) error {
+		o, err := x.Dereference(*v)
+		if err != nil {
+			return err
+		}
+		if d, ok := o.(types.Dict); ok {
+			o, err = x.Dereference(d["D"])
+			if err != nil {
+				return err
+			}
+		}
+		arr, ok := o.(types.Array)
+		if !ok || len(arr) == 0 {
+			return fmt.Errorf("dest %q: got %v", k, o)
+		}
+		ir, ok := arr[0].(types.IndirectRef)
+		if !ok {
+			return fmt.Errorf("dest %q: got page %v", k, arr[0])
+		}
+		pageNr, err := x.PageNumber(context.Background(), ir.ObjectNumber.Value())
+		if err != nil {
+			return fmt.Errorf("dest %q: %w", k, err)
+		}
+		dests[k] = pageNr
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return dests
+}
+
+// TestExtractPageKeepsSourceNamedDests pins that ExtractPage does not change the named destinations
+// of its source context: each page extracted from one context, in any order and repeatedly, equals the
+// page extracted from a fresh read of the PDF, byte for byte apart from the clock-derived ID and dates,
+// and keeps exactly the named destinations that point to it. ExtractPagesContext equals the same
+// per page extraction from fresh reads.
+func TestExtractPageKeepsSourceNamedDests(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		data  []byte
+		dests []map[string]int
+	}{
+		{"flat", pageHelpersNamedDestsPDF(), []map[string]int{{"a": 1}, {"b": 1}, {"c": 1}}},
+		{"tree", pageHelpersNamedDestsTreePDF(), []map[string]int{{"a": 1, "e": 1}, {"b": 1}, {"c": 1}, {"d": 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fresh := make([][]byte, len(tc.dests))
+			for i := range tc.dests {
+				r, err := ExtractPage(context.Background(), pageHelpersRead(t, tc.data), i+1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fresh[i], _ = io.ReadAll(r)
+				if got := pageHelpersDests(t, fresh[i]); !reflect.DeepEqual(got, tc.dests[i]) {
+					t.Errorf("page %d: fresh read: got dests %v, want %v", i+1, got, tc.dests[i])
+				}
+			}
+
+			ctx := pageHelpersRead(t, tc.data)
+			order := []int{}
+			for i := range tc.dests {
+				order = append(order, i+1)
+			}
+			for i := len(tc.dests); i > 0; i-- {
+				order = append(order, i)
+			}
+			for _, pageNr := range order {
+				r, err := ExtractPage(context.Background(), ctx, pageNr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, _ := io.ReadAll(r)
+				if !bytes.Equal(pageHelpersStable(got), pageHelpersStable(fresh[pageNr-1])) {
+					t.Errorf("page %d: output from a reused context differs from a fresh read; dests %v, want %v",
+						pageNr, pageHelpersDests(t, got), tc.dests[pageNr-1])
+				}
+			}
+
+			i := 0
+			if err := ExtractPagesContext(context.Background(), pageHelpersRead(t, tc.data), nil, func(r io.Reader, pageNr int) error {
+				got, err := io.ReadAll(r)
+				if !bytes.Equal(pageHelpersStable(got), pageHelpersStable(fresh[pageNr-1])) {
+					t.Errorf("ExtractPagesContext page %d: output differs from a fresh read", pageNr)
+				}
+				i++
+				return err
+			}); err != nil || i != len(tc.dests) {
+				t.Fatalf("ExtractPagesContext: %v after %d pages", err, i)
+			}
+		})
+	}
+}
