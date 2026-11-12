@@ -3052,30 +3052,36 @@ func (xRefTable *XRefTable) collectPageBoundariesForPage(d types.Dict, pb []Page
 	return nil
 }
 
-func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d types.Dict, inhMediaBox, inhCropBox **types.Rectangle) error {
+// collectMediaBoxAndCropBox returns the MediaBox and CropBox that apply to the
+// page tree node d and that d passes on to its kids: inhMediaBox and inhCropBox,
+// the boxes of d's ancestors, overridden by the boxes d declares. A MediaBox of
+// d also drops the inherited CropBox. The boxes of d's siblings never apply.
+func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d types.Dict, inhMediaBox, inhCropBox *types.Rectangle) (mediaBox, cropBox *types.Rectangle, err error) {
+	mediaBox, cropBox = inhMediaBox, inhCropBox
+
 	obj, found := d.Find("MediaBox")
 	if found {
 		a, err := xRefTable.DereferenceArray(obj)
 		if err != nil {
-			return fmt.Errorf("MediaBox: dereference array: %w", err)
+			return nil, nil, fmt.Errorf("MediaBox: dereference array: %w", err)
 		}
-		if *inhMediaBox, err = xRefTable.pageBoundaryRect(a); err != nil {
-			return fmt.Errorf("MediaBox: rectangle: %w", err)
+		if mediaBox, err = xRefTable.pageBoundaryRect(a); err != nil {
+			return nil, nil, fmt.Errorf("MediaBox: rectangle: %w", err)
 		}
-		*inhCropBox = nil
+		cropBox = nil
 	}
 
 	obj, found = d.Find("CropBox")
 	if found {
 		a, err := xRefTable.DereferenceArray(obj)
 		if err != nil {
-			return fmt.Errorf("CropBox: dereference array: %w", err)
+			return nil, nil, fmt.Errorf("CropBox: dereference array: %w", err)
 		}
-		if *inhCropBox, err = xRefTable.pageBoundaryRect(a); err != nil {
-			return fmt.Errorf("CropBox: rectangle: %w", err)
+		if cropBox, err = xRefTable.pageBoundaryRect(a); err != nil {
+			return nil, nil, fmt.Errorf("CropBox: rectangle: %w", err)
 		}
 	}
-	return nil
+	return mediaBox, cropBox, nil
 }
 
 // relaxedPageTreeKid reports how relaxed validation treats the Kids entry
@@ -3117,16 +3123,13 @@ func (xRefTable *XRefTable) pageOwnMediaBox(d types.Dict) *types.Rectangle {
 // validation puts in place of a missing page tree kid: the MediaBox that
 // validation passes down to this kid, frameMediaBox, or A4 without one, and
 // the inherited rotation, but no CropBox. Validation gives the blank page's
-// MediaBox to the kids that follow it, so frameMediaBox is updated. The running
-// boxes change as they do for a page with its own MediaBox.
-func collectBlankPageBoundaries(inhMediaBox, inhCropBox, frameMediaBox **types.Rectangle, pb []PageBoundaries, r, p int, collect bool) {
+// MediaBox to the kids that follow it, so frameMediaBox is updated.
+func collectBlankPageBoundaries(frameMediaBox **types.Rectangle, pb []PageBoundaries, r, p int, collect bool) {
 	if *frameMediaBox == nil {
 		*frameMediaBox = types.RectForFormat("A4")
 	}
-	mediaBox := *frameMediaBox
-	*inhMediaBox, *inhCropBox = mediaBox, nil
 	if collect {
-		pb[p] = PageBoundaries{Media: &Box{Rect: mediaBox}, Rot: r}
+		pb[p] = PageBoundaries{Media: &Box{Rect: *frameMediaBox}, Rot: r}
 	}
 }
 
@@ -3134,7 +3137,7 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTreeKids(
 	c context.Context,
 	parentObjNr int,
 	kids types.Array,
-	inhMediaBox, inhCropBox **types.Rectangle,
+	inhMediaBox, inhCropBox *types.Rectangle,
 	pb []PageBoundaries,
 	r int,
 	p *int,
@@ -3170,7 +3173,7 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTreeKids(
 			if !collect {
 				_, collect = selectedPages[(*p)+1]
 			}
-			collectBlankPageBoundaries(inhMediaBox, inhCropBox, &frame, pb, r, *p, collect)
+			collectBlankPageBoundaries(&frame, pb, r, *p, collect)
 			*p++
 			continue
 		}
@@ -3266,7 +3269,7 @@ func (xRefTable *XRefTable) pageTreeNodeRotation(d types.Dict, objNr, inherited 
 func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
 	c context.Context,
 	root *types.IndirectRef,
-	inhMediaBox, inhCropBox **types.Rectangle,
+	inhMediaBox, inhCropBox *types.Rectangle,
 	pb []PageBoundaries,
 	r int,
 	p *int,
@@ -3295,17 +3298,24 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
 		return err
 	}
 
-	if err := xRefTable.collectMediaBoxAndCropBox(d, inhMediaBox, inhCropBox); err != nil {
+	mediaBox, cropBox, err := xRefTable.collectMediaBoxAndCropBox(d, inhMediaBox, inhCropBox)
+	if err != nil {
 		return fmt.Errorf("page tree obj#%d: %w", objNr, err)
 	}
-	// The MediaBox this node gives its kids: its own, or the one passed down.
+	// The MediaBox validation gives this node's kids: its own, or the one passed down.
 	nodeMediaBox := frameMediaBox
 	if _, found := d.Find("MediaBox"); found {
-		nodeMediaBox = *inhMediaBox
+		nodeMediaBox = mediaBox
 	}
 
 	if pageType == "Page" {
-		if err := xRefTable.collectPageBoundariesForPage(d, pb, *inhMediaBox, *inhCropBox, r, *p); err != nil {
+		if mediaBox == nil {
+			// No MediaBox on the page or its ancestors. Validation accepts the
+			// page if the first earlier page kid of its node or of an ancestor
+			// node has one and gives it that box, frameMediaBox.
+			mediaBox = frameMediaBox
+		}
+		if err := xRefTable.collectPageBoundariesForPage(d, pb, mediaBox, cropBox, r, *p); err != nil {
 			return fmt.Errorf("page %d: %w", *p+1, err)
 		}
 		return nil
@@ -3333,7 +3343,7 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
 	}
 
 	return xRefTable.collectPageBoundariesForPageTreeKids(
-		c, objNr, kids, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth, nodeMediaBox, visit)
+		c, objNr, kids, mediaBox, cropBox, pb, r, p, selectedPages, depth, nodeMediaBox, visit)
 }
 
 // countPageTreeLeaf counts the page objNr. It rejects a page past
@@ -3494,14 +3504,13 @@ func (xRefTable *XRefTable) PageBoundaries(c context.Context, selectedPages type
 	}
 
 	i := 0
-	// mb starts nil so a page with no MediaBox on its path, and none on an
-	// earlier page in tree order, fails with "missing effective box". cb starts
-	// nil for symmetry; its start value is never observed, because any MediaBox
-	// on the path resets it.
-	var mb, cb *types.Rectangle
+	// A page inherits MediaBox and CropBox from its ancestors only. A page with
+	// no MediaBox on its path takes the one validation accepts it with, from the
+	// first earlier page kid of its node or of an ancestor node, and fails with
+	// "missing effective box" without one.
 	pbs := make([]PageBoundaries, xRefTable.PageCount)
 	if err := xRefTable.collectPageBoundariesForPageTree(
-		c, root, &mb, &cb, pbs, 0, &i, selectedPages, 0, nil, NewPageTreeVisit(),
+		c, root, nil, nil, pbs, 0, &i, selectedPages, 0, nil, NewPageTreeVisit(),
 	); err != nil {
 		return nil, fmt.Errorf("page tree: %w", err)
 	}

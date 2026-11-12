@@ -33,8 +33,7 @@ import (
 
 // pageHelpersTreePDF builds a three page PDF whose boxes and rotation are inherited through two page tree levels.
 // Page 1 inherits the root's MediaBox, page 2 inherits a CropBox and a rotation from an intermediate node, and
-// page 3 has its own MediaBox and CropBox. The page with its own boxes comes last because the page tree walk
-// of XRefTable.PageBoundaries passes boxes a node declares on to its later siblings.
+// page 3 has its own MediaBox and CropBox.
 func pageHelpersTreePDF() []byte {
 	return failureTestPDF(
 		"<< /Type /Catalog /Pages 2 0 R >>",
@@ -108,6 +107,94 @@ func TestReadPageBoundariesInheritance(t *testing.T) {
 	}
 	if !reflect.DeepEqual(pbs, boxes) {
 		t.Errorf("ReadPageBoundaries %+v, Boxes %+v", pbs, boxes)
+	}
+}
+
+// TestPageBoundariesInheritFromAncestorsOnly pins that a page inherits MediaBox, CropBox and Rotate
+// from its ancestors only (ISO 32000 7.7.3.4): the boxes a page or a Pages node declares do not
+// apply to its later siblings, whichever pages are selected, and ReadPageBoundaries, Boxes and
+// PageBoundaries after ReadAndValidate agree. Without a MediaBox on its path, a page takes the
+// MediaBox of the first earlier page kid of its node or of an ancestor node, the box validation
+// accepts it with.
+func TestPageBoundariesInheritFromAncestorsOnly(t *testing.T) {
+	const catalog = "<< /Type /Catalog /Pages 2 0 R >>"
+	r := types.NewRectangle
+	type page struct {
+		media, crop    *types.Rectangle
+		mediaInherited bool
+		rot            int
+	}
+	for _, tc := range []struct {
+		name    string
+		objects []string
+		want    []page
+	}{
+		{"page MediaBox", []string{catalog,
+			"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 100 100] >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+			"<< /Type /Page /Parent 2 0 R >>",
+		}, []page{{r(0, 0, 200, 200), nil, false, 0}, {r(0, 0, 100, 100), nil, true, 0}}},
+		{"page CropBox", []string{catalog,
+			"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 100 100] /CropBox [1 1 99 99] >>",
+			"<< /Type /Page /Parent 2 0 R /CropBox [5 5 50 50] >>",
+			"<< /Type /Page /Parent 2 0 R >>",
+		}, []page{{r(0, 0, 100, 100), r(5, 5, 50, 50), true, 0}, {r(0, 0, 100, 100), r(1, 1, 99, 99), true, 0}}},
+		{"page MediaBox drops CropBox for the page only", []string{catalog,
+			"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /MediaBox [0 0 100 100] /CropBox [1 1 99 99] >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+			"<< /Type /Page /Parent 2 0 R >>",
+		}, []page{{r(0, 0, 200, 200), nil, false, 0}, {r(0, 0, 100, 100), r(1, 1, 99, 99), true, 0}}},
+		{"Pages node boxes", []string{catalog,
+			"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 /MediaBox [0 0 100 100] /Rotate 90 >>",
+			"<< /Type /Pages /Parent 2 0 R /Kids [4 0 R] /Count 1 /MediaBox [0 0 300 300] /CropBox [3 3 30 30] /Rotate 180 >>",
+			"<< /Type /Page /Parent 3 0 R >>",
+			"<< /Type /Page /Parent 2 0 R >>",
+		}, []page{{r(0, 0, 300, 300), r(3, 3, 30, 30), true, 180}, {r(0, 0, 100, 100), nil, true, 90}}},
+		{"no MediaBox on the path", []string{catalog,
+			"<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R] /Count 3 >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>",
+			"<< /Type /Page /Parent 2 0 R >>",
+		}, []page{{r(0, 0, 200, 200), nil, false, 0}, {r(0, 0, 300, 300), nil, false, 0}, {r(0, 0, 200, 200), nil, true, 0}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := failureTestPDF(tc.objects...)
+			pbs, err := ReadPageBoundaries(context.Background(), bytes.NewReader(data), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pbs) != len(tc.want) {
+				t.Fatalf("got %d pages, want %d", len(pbs), len(tc.want))
+			}
+			for i, w := range tc.want {
+				pb := pbs[i]
+				if !reflect.DeepEqual(pageHelpersRect(pb.Media), w.media) || pb.Media.Inherited != w.mediaInherited {
+					t.Errorf("page %d: MediaBox %v inherited %t, want %v inherited %t", i+1, pageHelpersRect(pb.Media), pb.Media.Inherited, w.media, w.mediaInherited)
+				}
+				if !reflect.DeepEqual(pageHelpersRect(pb.Crop), w.crop) {
+					t.Errorf("page %d: CropBox %v, want %v", i+1, pageHelpersRect(pb.Crop), w.crop)
+				}
+				if pb.Rot != w.rot {
+					t.Errorf("page %d: Rotate %d, want %d", i+1, pb.Rot, w.rot)
+				}
+				one, err := ReadPageBoundaries(context.Background(), bytes.NewReader(data), []string{fmt.Sprint(i + 1)}, nil)
+				if err != nil || !reflect.DeepEqual(one[i], pb) {
+					t.Errorf("page %d selected alone: got %+v, %v, want %+v", i+1, one, err, pb)
+				}
+			}
+			boxes, err := Boxes(context.Background(), bytes.NewReader(data), nil, model.NewTolerantConfiguration())
+			if err != nil || !reflect.DeepEqual(boxes, pbs) {
+				t.Errorf("Boxes %+v, %v, want %+v", boxes, err, pbs)
+			}
+			ctx, err := ReadAndValidate(context.Background(), bytes.NewReader(data), model.NewTolerantConfiguration())
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := ctx.PageBoundaries(context.Background(), nil)
+			if err != nil || !reflect.DeepEqual(want, pbs) {
+				t.Errorf("PageBoundaries after validation %+v, %v, want %+v", want, err, pbs)
+			}
+		})
 	}
 }
 
