@@ -36,12 +36,31 @@ func prepareCoreFontDict(ctx *model.Context, d types.Dict, owner int) error {
 	}
 	fd, err := pdffont.EnsureCoreFontMetrics(ctx.XRefTable, d)
 	if err != nil {
-		return err
+		return keepCoreFontWithoutMetrics(ctx, owner, err)
 	}
 	if fd != nil && ctx.Write.Increment {
 		ctx.Write.IncrementWithObjNr(owner)
 		ctx.Write.IncrementWithObjNr(fd.ObjectNumber.Value())
 	}
+	return nil
+}
+
+const coreFontMetricsWriteKind = "PDF 2.0 standard font metrics"
+
+// keepCoreFontWithoutMetrics handles err, the failure to complete the metrics
+// of a standard font in object owner for PDF 2.0. In relaxed validation mode
+// the font is written as it is, with one notice per object: pdfcpu cannot
+// compute widths a viewer would agree with, and the font is drawn as before.
+func keepCoreFontWithoutMetrics(ctx *model.Context, owner int, err error) error {
+	if ctx.XRefTable.ValidationMode != model.ValidationRelaxed {
+		return err
+	}
+	if owner > 0 && !ctx.XRefTable.MarkDigested(coreFontMetricsWriteKind, owner) {
+		return nil
+	}
+	err = model.WithValidationErrorObject(fmt.Errorf("PDF 2.0 standard font kept without metrics: %w", err), owner)
+	ctx.AddValidationNotice(model.NewValidationNotice(
+		model.NoticePhaseValidate, model.NoticeDigested, err.Error(), err))
 	return nil
 }
 
