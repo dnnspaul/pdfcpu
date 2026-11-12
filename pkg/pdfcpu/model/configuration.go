@@ -557,7 +557,8 @@ type ResourceLimits struct {
 	// once in Kids counts each time. Validation, XRefTable.CountPageTreeLeaves
 	// and XRefTable.EnsurePageCount stop with a ResourceLimitError of kind
 	// LimitPages before the page past the limit is processed.
-	// Zero or negative means unlimited.
+	// Zero or negative means unlimited, except that relaxed mode keeps the
+	// cross-reference table size as its bound on the pages of a page tree.
 	MaxPageCount int
 }
 

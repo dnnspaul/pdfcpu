@@ -1376,42 +1376,66 @@ func showDigestedPageTreeParentViolation(err error) {
 	}
 }
 
-func detectPageNodeDict(xRefTable *model.XRefTable, indRef types.IndirectRef, objNr, parentObjNr int, mediaBoxArr types.Array, pageNr int) (types.Dict, error) {
+// blankPageKids maps a missing page tree kid, by its object number, to the
+// object number of the blank page relaxed validation stored for it. It is kept
+// for one validation run, so every reference to the same kid gets the same
+// page.
+type blankPageKids map[int]int
+
+// detectPageNodeDict returns the page tree node that indRef refers to, and the
+// reference to use for it. In relaxed mode a missing node, or one that is an
+// empty dict, is replaced by a blank page. A number below Size is taken in
+// place: a free number is safe there, as the free list is rebuilt after the
+// walk. Any other number gets a new one, see newBlankPageObjNr, and the kid's
+// reference is rewritten to it.
+func detectPageNodeDict(xRefTable *model.XRefTable, indRef types.IndirectRef, objNr, parentObjNr int, mediaBoxArr types.Array, pageNr int, blankKids blankPageKids) (types.IndirectRef, types.Dict, error) {
 	pageNodeDict, err := xRefTable.DereferenceDict(indRef)
 	if err != nil {
 		err = fmt.Errorf("page tree: kid: dereference: %w", err)
-		return nil, model.WithValidationErrorObject(err, objNr)
+		return indRef, nil, model.WithValidationErrorObject(err, objNr)
 	}
 
 	if len(pageNodeDict) > 0 {
-		return pageNodeDict, nil
+		return indRef, pageNodeDict, nil
 	}
 
 	if xRefTable.ValidationMode == model.ValidationStrict {
 		err = fmt.Errorf("page tree: corrupt page %d", pageNr)
-		return nil, model.WithValidationErrorObject(err, objNr)
+		return indRef, nil, model.WithValidationErrorObject(err, objNr)
 	}
 
 	var mediaBox *types.Rectangle
 	if len(mediaBoxArr) > 0 {
 		mediaBox, err = xRefTable.RectForArray(mediaBoxArr)
 		if err != nil {
-			return nil, model.WithValidationErrorObject(err, parentObjNr)
+			return indRef, nil, model.WithValidationErrorObject(err, parentObjNr)
 		}
 	}
 
-	if _, err := xRefTable.EmptyPage(types.NewIndirectRef(parentObjNr, 0), mediaBox, objNr); err != nil {
-		return nil, model.WithValidationErrorObject(err, objNr)
+	// storeBlankPage writes generation 0, so the Kids entry must reference
+	// generation 0 too, whatever generation the missing kid named.
+	blankRef := *types.NewIndirectRef(objNr, 0)
+	if objNr >= *xRefTable.Size {
+		n, err := newBlankPageObjNr(xRefTable)
+		if err != nil {
+			return indRef, nil, model.WithValidationErrorObject(err, objNr)
+		}
+		blankKids[objNr] = n
+		blankRef = *types.NewIndirectRef(n, 0)
+	}
+
+	if err := storeBlankPage(xRefTable, parentObjNr, blankRef.ObjectNumber.Value(), mediaBox); err != nil {
+		return indRef, nil, model.WithValidationErrorObject(err, objNr)
 	}
 
 	model.ShowRepaired(fmt.Sprintf("corrupt page %d with blank page", pageNr))
 
-	pageNodeDict, err = xRefTable.DereferenceDict(indRef)
+	pageNodeDict, err = xRefTable.DereferenceDict(blankRef)
 	if err != nil {
 		err = fmt.Errorf("page tree: repaired kid obj#%d: dereference: %w", objNr, err)
-		return nil, model.WithValidationErrorObject(err, objNr)
+		return indRef, nil, model.WithValidationErrorObject(err, objNr)
 	}
-	return pageNodeDict, nil
+	return blankRef, pageNodeDict, nil
 }
 
 func pageTreePageError(err error, objNr int) error {
@@ -1444,7 +1468,50 @@ func pageTreeNodeEntryError(err error, objNr int, entryName string) error {
 	return model.WithValidationErrorObject(err, objNr)
 }
 
-func processPagesKids(c context.Context, xRefTable *model.XRefTable, kids types.Array, parentObjNr int, hasResources bool, mediaBoxArr types.Array, curPage *int, depth int, visit *model.PageTreeVisit) (types.Array, error) {
+// newBlankPageObjNr returns the first object number at or after Size that no
+// entry uses, and moves Size past it. Relaxed validation gives a blank page for
+// a kid at or beyond Size a number from here. Size then covers the page, and no
+// number from the free list is taken, which matters because the free list is
+// only rebuilt after the page tree walk. A number beyond
+// ResourceLimits.MaxObjectNumber is an error.
+func newBlankPageObjNr(xRefTable *model.XRefTable) (int, error) {
+	n := *xRefTable.Size
+	for {
+		if _, used := xRefTable.Table[n]; !used {
+			break
+		}
+		n++
+	}
+	if xRefTable.Conf != nil {
+		if err := xRefTable.Conf.Limits.CheckObjectNumber(int64(n)); err != nil {
+			return 0, fmt.Errorf("page tree: blank page: %w", err)
+		}
+	}
+	*xRefTable.Size = n + 1
+	return n, nil
+}
+
+// storeBlankPage stores an empty page dict at objNr in place of a missing page
+// tree kid. The page has no /Contents, which ISO 32000 makes optional for a page
+// without content, so the repair needs no content stream object.
+func storeBlankPage(xRefTable *model.XRefTable, parentObjNr, objNr int, mediaBox *types.Rectangle) error {
+	arr := types.RectForFormat("A4").Array()
+	if mediaBox != nil {
+		arr = mediaBox.Array()
+	}
+	pageDict := types.Dict(
+		map[string]types.Object{
+			"Type":      types.Name("Page"),
+			"Parent":    *types.NewIndirectRef(parentObjNr, 0),
+			"Resources": types.NewDict(),
+			"MediaBox":  arr,
+		},
+	)
+	_, err := xRefTable.IndRefForObject(objNr, pageDict)
+	return err
+}
+
+func processPagesKids(c context.Context, xRefTable *model.XRefTable, kids types.Array, parentObjNr int, hasResources bool, mediaBoxArr types.Array, curPage *int, depth int, visit *model.PageTreeVisit, blankKids blankPageKids) (types.Array, error) {
 	var a types.Array
 
 	for i, o := range kids {
@@ -1463,11 +1530,24 @@ func processPagesKids(c context.Context, xRefTable *model.XRefTable, kids types.
 		}
 
 		objNr := ir.ObjectNumber.Value()
-		if objNr == 0 {
+		// Object 0 is skipped in both modes; relaxed mode also drops a negative
+		// object number, which strict mode keeps rejecting.
+		if objNr == 0 || objNr < 0 && xRefTable.ValidationMode == model.ValidationRelaxed {
 			continue
 		}
+		// Relaxed mode drops a kid beyond MaxObjectNumber like a null kid, as the
+		// page tree walk does.
+		if xRefTable.ValidationMode == model.ValidationRelaxed && xRefTable.Conf != nil &&
+			xRefTable.Conf.Limits.CheckObjectNumber(int64(objNr)) != nil {
+			continue
+		}
+		// A kid repaired earlier in this run refers to its blank page.
+		if n, found := blankKids[objNr]; found {
+			ir = *types.NewIndirectRef(n, 0)
+			objNr = n
+		}
 
-		pageNodeDict, err := detectPageNodeDict(xRefTable, ir, objNr, parentObjNr, mediaBoxArr, *curPage+1)
+		ir, pageNodeDict, err := detectPageNodeDict(xRefTable, ir, objNr, parentObjNr, mediaBoxArr, *curPage+1, blankKids)
 		if err != nil {
 			return nil, err
 		}
@@ -1487,7 +1567,7 @@ func processPagesKids(c context.Context, xRefTable *model.XRefTable, kids types.
 		switch dictType {
 
 		case "Pages":
-			if err = validatePagesDictDepth(c, xRefTable, pageNodeDict, objNr, hasResources, mediaBoxArr, curPage, depth+1, visit); err != nil {
+			if err = validatePagesDictDepth(c, xRefTable, pageNodeDict, objNr, hasResources, mediaBoxArr, curPage, depth+1, visit, blankKids); err != nil {
 				return nil, pageTreeKidError(err, objNr)
 			}
 
@@ -1521,7 +1601,7 @@ func processPagesKids(c context.Context, xRefTable *model.XRefTable, kids types.
 	return a, nil
 }
 
-func validatePagesDictDepth(c context.Context, xRefTable *model.XRefTable, d types.Dict, objNr int, hasResources bool, mediaBoxArr types.Array, curPage *int, depth int, visit *model.PageTreeVisit) error {
+func validatePagesDictDepth(c context.Context, xRefTable *model.XRefTable, d types.Dict, objNr int, hasResources bool, mediaBoxArr types.Array, curPage *int, depth int, visit *model.PageTreeVisit, blankKids blankPageKids) error {
 	if err := contextutil.Check(c); err != nil {
 		return err
 	}
@@ -1559,14 +1639,14 @@ func validatePagesDictDepth(c context.Context, xRefTable *model.XRefTable, d typ
 		return nil
 	}
 
-	d["Kids"], err = processPagesKids(c, xRefTable, kids, objNr, hasResources, mediaBoxArr, curPage, depth, visit)
+	d["Kids"], err = processPagesKids(c, xRefTable, kids, objNr, hasResources, mediaBoxArr, curPage, depth, visit, blankKids)
 
 	return err
 }
 
 func validatePagesDict(c context.Context, xRefTable *model.XRefTable, d types.Dict, objNr int, hasResources bool, mediaBoxArr types.Array, curPage *int) error {
 	return validatePagesDictDepth(
-		c, xRefTable, d, objNr, hasResources, mediaBoxArr, curPage, 0, model.NewPageTreeVisit(),
+		c, xRefTable, d, objNr, hasResources, mediaBoxArr, curPage, 0, model.NewPageTreeVisit(), blankPageKids{},
 	)
 }
 
@@ -1730,6 +1810,13 @@ func validatePages(c context.Context, xRefTable *model.XRefTable, rootDict types
 	err = validatePagesDict(c, xRefTable, pageRoot, objNr, false, nil, &pc)
 	if err != nil {
 		return nil, err
+	}
+	if xRefTable.ValidationMode == model.ValidationRelaxed {
+		// A blank page stored at a free kid leaves that number on the free list.
+		// Rebuild the list once, before anything can take a number from it.
+		if err := xRefTable.EnsureValidFreeList(); err != nil {
+			return nil, fmt.Errorf("page tree: free list: %w", err)
+		}
 	}
 
 	if err = validateOrRepairPageTreeCount(xRefTable, pageRoot, objNr, pc); err != nil {

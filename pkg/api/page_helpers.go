@@ -37,9 +37,18 @@ import (
 // Compared with ReadAndValidate, ReadPageBoundaries parses the input in the
 // same way, with the same limits and cancellation checks, but skips
 // validation: no catalog, structure tree, annotation, form, resource or
-// content checks, and no relaxed-mode repairs of the page tree. A page tree
-// that needs such a repair, for example a null entry in Kids, fails with
-// ErrInvalidPDF here although ReadAndValidate may accept it.
+// content checks. In relaxed mode the page tree walk accepts some page tree
+// defects that relaxed validation repairs, and counts pages as validation
+// does: null entries in Kids, references to object 0, negative object numbers
+// and references beyond conf.Limits.MaxObjectNumber are skipped, a reference to
+// a missing, free or null object or to an empty dict is a blank page with the
+// MediaBox that validation gives it or A4, a page listed more than once in Kids
+// counts each time, and a null page boundary coordinate is 0. Without a
+// MaxPageCount, relaxed mode keeps the cap of one page per cross-reference
+// table entry, so a page tree with more pages fails with ErrInvalidPDF. In
+// strict mode these defects fail with ErrInvalidPDF, except that a page
+// repeated in Kids is accepted up to the number of objects in the PDF. More
+// pages than conf.Limits.MaxPageCount fail with a *model.ResourceLimitError.
 //
 // Errors can be classified with errors.Is and errors.As as for
 // ReadAndValidateWithReport: ErrWrongPassword, context errors with the

@@ -176,7 +176,8 @@ func TestReadPageBoundariesHostileCount(t *testing.T) {
 	}
 }
 
-// TestReadPageBoundariesInvalidPageTree pins ErrInvalidPDF for page trees a walk without repairs cannot use.
+// TestReadPageBoundariesInvalidPageTree pins ErrInvalidPDF for page trees the page tree walk cannot use.
+// More repeated pages than objects and null kids fail in strict mode only.
 func TestReadPageBoundariesInvalidPageTree(t *testing.T) {
 	deep := []string{"<< /Type /Catalog /Pages 2 0 R >>"}
 	for i := 2; i < 12; i++ {
@@ -185,6 +186,8 @@ func TestReadPageBoundariesInvalidPageTree(t *testing.T) {
 	deep = append(deep, "<< /Type /Page /MediaBox [0 0 595 842] >>")
 	shallow := model.NewTolerantConfiguration()
 	shallow.Limits.MaxRecursionDepth = 5
+	strict := model.NewTolerantConfiguration()
+	strict.ValidationMode = model.ValidationStrict
 
 	for _, tc := range []struct {
 		name   string
@@ -208,12 +211,12 @@ func TestReadPageBoundariesInvalidPageTree(t *testing.T) {
 			"<< /Type /Catalog /Pages 2 0 R >>",
 			"<< /Type /Pages /Kids [3 0 R 3 0 R 3 0 R 3 0 R 3 0 R] /Count 5 >>",
 			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
-		), nil, nil},
+		), strict, nil},
 		{"null kid", failureTestPDF(
 			"<< /Type /Catalog /Pages 2 0 R >>",
 			"<< /Type /Pages /Kids [3 0 R null] /Count 1 >>",
 			"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
-		), nil, nil},
+		), strict, nil},
 		{"short MediaBox", failureTestPDF(
 			"<< /Type /Catalog /Pages 2 0 R >>",
 			"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",

@@ -88,9 +88,17 @@ func TestPageBoundariesIncludePageTreeAndPageContext(t *testing.T) {
 	}
 }
 
-// TestPageBoundariesRejectsNilPageTreeKid verifies contextual nil child handling.
+// strictPageTreeConfiguration returns the default configuration in strict mode,
+// in which the page tree walk rejects the kids relaxed mode tolerates.
+func strictPageTreeConfiguration() *Configuration {
+	conf := NewDefaultConfiguration()
+	conf.ValidationMode = ValidationStrict
+	return conf
+}
+
+// TestPageBoundariesRejectsNilPageTreeKid verifies contextual nil child handling in strict mode.
 func TestPageBoundariesRejectsNilPageTreeKid(t *testing.T) {
-	xRefTable := newXRefTable(NewDefaultConfiguration())
+	xRefTable := newXRefTable(strictPageTreeConfiguration())
 	pagesRef, err := xRefTable.IndRefForObject(2, types.Dict{
 		"Type":     types.Name("Pages"),
 		"Count":    types.Integer(1),
@@ -111,7 +119,7 @@ func TestPageBoundariesRejectsNilPageTreeKid(t *testing.T) {
 
 func pageBoundariesWithKid(t *testing.T, kid func(*testing.T, *XRefTable) types.Object) *XRefTable {
 	t.Helper()
-	xRefTable := newXRefTable(NewDefaultConfiguration())
+	xRefTable := newXRefTable(strictPageTreeConfiguration())
 	pagesRef, err := xRefTable.IndRefForObject(2, types.Dict{
 		"Type":     types.Name("Pages"),
 		"Count":    types.Integer(1),
@@ -126,7 +134,7 @@ func pageBoundariesWithKid(t *testing.T, kid func(*testing.T, *XRefTable) types.
 	return xRefTable
 }
 
-// TestPageBoundariesRejectsInvalidPageTreeKids verifies contextual page-tree child errors.
+// TestPageBoundariesRejectsInvalidPageTreeKids verifies contextual page-tree child errors in strict mode.
 func TestPageBoundariesRejectsInvalidPageTreeKids(t *testing.T) {
 	tests := []struct {
 		name string

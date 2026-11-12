@@ -2969,11 +2969,32 @@ func (xRefTable *XRefTable) resolvePageBoundary(d types.Dict, boxName string) (*
 	if err != nil {
 		return nil, fmt.Errorf("%s: dereference array: %w", boxName, err)
 	}
-	r, err := rect(xRefTable, a)
+	r, err := xRefTable.pageBoundaryRect(a)
 	if err != nil {
 		return nil, fmt.Errorf("%s: rectangle: %w", boxName, err)
 	}
 	return r, nil
+}
+
+// pageBoundaryRect returns the rectangle of the page boundary array a.
+// In relaxed mode a coordinate that is null or refers to a missing object
+// counts as 0, the value relaxed validation repairs it to.
+func (xRefTable *XRefTable) pageBoundaryRect(a types.Array) (*types.Rectangle, error) {
+	if xRefTable.ValidationMode != ValidationRelaxed {
+		return rect(xRefTable, a)
+	}
+	repaired := make(types.Array, len(a))
+	for i, o := range a {
+		v, err := xRefTable.Dereference(o)
+		if err != nil {
+			return nil, err
+		}
+		if v == nil {
+			v = types.Integer(0)
+		}
+		repaired[i] = v
+	}
+	return rect(xRefTable, repaired)
 }
 
 func (xRefTable *XRefTable) collectPageBoundariesForPage(d types.Dict, pb []PageBoundaries, inhMediaBox, inhCropBox *types.Rectangle, rot, p int) error {
@@ -3038,7 +3059,7 @@ func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d types.Dict, inhMediaBox,
 		if err != nil {
 			return fmt.Errorf("MediaBox: dereference array: %w", err)
 		}
-		if *inhMediaBox, err = rect(xRefTable, a); err != nil {
+		if *inhMediaBox, err = xRefTable.pageBoundaryRect(a); err != nil {
 			return fmt.Errorf("MediaBox: rectangle: %w", err)
 		}
 		*inhCropBox = nil
@@ -3050,11 +3071,63 @@ func (xRefTable *XRefTable) collectMediaBoxAndCropBox(d types.Dict, inhMediaBox,
 		if err != nil {
 			return fmt.Errorf("CropBox: dereference array: %w", err)
 		}
-		if *inhCropBox, err = rect(xRefTable, a); err != nil {
+		if *inhCropBox, err = xRefTable.pageBoundaryRect(a); err != nil {
 			return fmt.Errorf("CropBox: rectangle: %w", err)
 		}
 	}
 	return nil
+}
+
+// relaxedPageTreeKid reports how relaxed validation treats the Kids entry
+// indRef: an entry for object 0, for a negative object number or for an object
+// number beyond ResourceLimits.MaxObjectNumber is dropped (skip), and an entry
+// for a missing, free or null object or an empty dict is replaced by a blank
+// page (blank). In strict mode both are false.
+func (xRefTable *XRefTable) relaxedPageTreeKid(indRef types.IndirectRef) (skip, blank bool) {
+	if xRefTable.ValidationMode != ValidationRelaxed {
+		return false, false
+	}
+	objNr := indRef.ObjectNumber.Value()
+	if objNr <= 0 || xRefTable.Conf != nil && xRefTable.Conf.Limits.CheckObjectNumber(int64(objNr)) != nil {
+		return true, false
+	}
+	d, err := xRefTable.DereferenceDict(indRef)
+	return false, err == nil && len(d) == 0
+}
+
+// pageOwnMediaBox returns the MediaBox of the page dict d, or nil if d has none
+// or it cannot be read. Errors are reported when the page itself is walked.
+func (xRefTable *XRefTable) pageOwnMediaBox(d types.Dict) *types.Rectangle {
+	obj, found := d.Find("MediaBox")
+	if !found {
+		return nil
+	}
+	a, err := xRefTable.DereferenceArray(obj)
+	if err != nil {
+		return nil
+	}
+	r, err := xRefTable.pageBoundaryRect(a)
+	if err != nil {
+		return nil
+	}
+	return r
+}
+
+// collectBlankPageBoundaries records the boundaries of the blank page relaxed
+// validation puts in place of a missing page tree kid: the MediaBox that
+// validation passes down to this kid, frameMediaBox, or A4 without one, and
+// the inherited rotation, but no CropBox. Validation gives the blank page's
+// MediaBox to the kids that follow it, so frameMediaBox is updated. The running
+// boxes change as they do for a page with its own MediaBox.
+func collectBlankPageBoundaries(inhMediaBox, inhCropBox, frameMediaBox **types.Rectangle, pb []PageBoundaries, r, p int, collect bool) {
+	if *frameMediaBox == nil {
+		*frameMediaBox = types.RectForFormat("A4")
+	}
+	mediaBox := *frameMediaBox
+	*inhMediaBox, *inhCropBox = mediaBox, nil
+	if collect {
+		pb[p] = PageBoundaries{Media: &Box{Rect: mediaBox}, Rot: r}
+	}
 }
 
 func (xRefTable *XRefTable) collectPageBoundariesForPageTreeKids(
@@ -3067,13 +3140,18 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTreeKids(
 	p *int,
 	selectedPages types.IntSet,
 	depth int,
+	frameMediaBox *types.Rectangle,
 	visit *PageTreeVisit) error {
 	// Iterate over page tree.
+	frame := frameMediaBox
 	for childIndex, o := range kids {
 		if err := c.Err(); err != nil {
 			return err
 		}
 		if o == nil {
+			if xRefTable.ValidationMode == ValidationRelaxed {
+				continue
+			}
 			return fmt.Errorf("page tree obj#%d: kid %d: nil object", parentObjNr, childIndex+1)
 		}
 
@@ -3081,6 +3159,20 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTreeKids(
 		indRef, ok := o.(types.IndirectRef)
 		if !ok {
 			return fmt.Errorf("page tree obj#%d: kid %d: expected indirect reference, got %T", parentObjNr, childIndex+1, o)
+		}
+
+		skip, blank := xRefTable.relaxedPageTreeKid(indRef)
+		if skip {
+			continue
+		}
+		if blank {
+			collect := len(selectedPages) == 0
+			if !collect {
+				_, collect = selectedPages[(*p)+1]
+			}
+			collectBlankPageBoundaries(inhMediaBox, inhCropBox, &frame, pb, r, *p, collect)
+			*p++
+			continue
 		}
 
 		pageNodeDict, err := xRefTable.DereferenceDict(indRef)
@@ -3105,19 +3197,22 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTreeKids(
 		switch pageType.Value() {
 		case "Pages":
 			if err = xRefTable.collectPageBoundariesForPageTree(
-				c, &indRef, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth+1, visit,
+				c, &indRef, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth+1, frame, visit,
 			); err != nil {
 				return err
 			}
 
 		case "Page":
+			if frame == nil {
+				frame = xRefTable.pageOwnMediaBox(pageNodeDict)
+			}
 			collect := len(selectedPages) == 0
 			if !collect {
 				_, collect = selectedPages[(*p)+1]
 			}
 			if collect {
 				if err = xRefTable.collectPageBoundariesForPageTree(
-					c, &indRef, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth+1, visit,
+					c, &indRef, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth+1, frame, visit,
 				); err != nil {
 					return err
 				}
@@ -3177,6 +3272,7 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
 	p *int,
 	selectedPages types.IntSet,
 	depth int,
+	frameMediaBox *types.Rectangle,
 	visit *PageTreeVisit) error {
 	if err := xRefTable.CheckRecursionDepth("page tree", depth); err != nil {
 		return err
@@ -3201,6 +3297,11 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
 
 	if err := xRefTable.collectMediaBoxAndCropBox(d, inhMediaBox, inhCropBox); err != nil {
 		return fmt.Errorf("page tree obj#%d: %w", objNr, err)
+	}
+	// The MediaBox this node gives its kids: its own, or the one passed down.
+	nodeMediaBox := frameMediaBox
+	if _, found := d.Find("MediaBox"); found {
+		nodeMediaBox = *inhMediaBox
 	}
 
 	if pageType == "Page" {
@@ -3232,16 +3333,18 @@ func (xRefTable *XRefTable) collectPageBoundariesForPageTree(
 	}
 
 	return xRefTable.collectPageBoundariesForPageTreeKids(
-		c, objNr, kids, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth, visit)
+		c, objNr, kids, inhMediaBox, inhCropBox, pb, r, p, selectedPages, depth, nodeMediaBox, visit)
 }
 
 // countPageTreeLeaf counts the page objNr. It rejects a page past
-// ResourceLimits.MaxPageCount and a page past limit.
+// ResourceLimits.MaxPageCount and, unless relaxed mode has that limit set, a
+// page past limit.
 func (xRefTable *XRefTable) countPageTreeLeaf(objNr int, n *int, limit int) error {
 	if err := xRefTable.CheckPageCount(*n + 1); err != nil {
 		return err
 	}
-	if *n >= limit {
+	unlimited := xRefTable.ValidationMode == ValidationRelaxed && xRefTable.Conf != nil && xRefTable.Conf.Limits.MaxPageCount > 0
+	if !unlimited && *n >= limit {
 		return fmt.Errorf("page tree obj#%d: more pages than the %d objects of the PDF", objNr, limit)
 	}
 	*n++
@@ -3302,11 +3405,24 @@ func (xRefTable *XRefTable) countPageTreeLeaves(
 			return err
 		}
 		if o == nil {
+			if xRefTable.ValidationMode == ValidationRelaxed {
+				continue
+			}
 			return fmt.Errorf("page tree obj#%d: kid %d: nil object", objNr, childIndex+1)
 		}
 		indRef, ok := o.(types.IndirectRef)
 		if !ok {
 			return fmt.Errorf("page tree obj#%d: kid %d: expected indirect reference, got %T", objNr, childIndex+1, o)
+		}
+		skip, blank := xRefTable.relaxedPageTreeKid(indRef)
+		if skip {
+			continue
+		}
+		if blank {
+			if err := xRefTable.countPageTreeLeaf(indRef.ObjectNumber.Value(), n, limit); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := xRefTable.countPageTreeLeaves(c, indRef, n, limit, depth+1, visit); err != nil {
 			return err
@@ -3318,11 +3434,23 @@ func (xRefTable *XRefTable) countPageTreeLeaves(
 // CountPageTreeLeaves returns the number of pages reachable through the Kids
 // arrays of the page tree and supports cancellation. Unlike EnsurePageCount it
 // ignores the declared Count entries. It walks the page tree like
-// PageBoundaries and rejects page tree cycles, duplicate page tree nodes,
-// nesting beyond ResourceLimits.MaxRecursionDepth and more pages than the
-// cross-reference table has entries. More pages than ResourceLimits.MaxPageCount
-// stop the walk with a ResourceLimitError of kind LimitPages. It does not set
-// PageCount.
+// PageBoundaries and rejects page tree cycles, duplicate page tree nodes and
+// nesting beyond ResourceLimits.MaxRecursionDepth. More pages than
+// ResourceLimits.MaxPageCount stop the walk with a ResourceLimitError of kind
+// LimitPages. It does not set PageCount.
+//
+// A page listed more than once in Kids counts each time. In strict mode
+// CountPageTreeLeaves rejects null entries in Kids, entries that do not refer
+// to a page tree node and more pages than the cross-reference table has
+// entries. In relaxed mode it counts the pages relaxed validation keeps: it
+// skips null entries, references to object 0, negative object numbers and
+// references beyond ResourceLimits.MaxObjectNumber, and counts a reference to a
+// missing, free or null object or to an empty dict as the blank page validation
+// puts in its place. With ResourceLimits.MaxPageCount set, the cross-reference
+// table size does not limit relaxed mode and MaxPageCount is the only bound.
+// Without it, relaxed mode keeps the table size as the bound, so the pages of
+// a compressed page tree stay bounded by the objects of the PDF. PageBoundaries
+// walks the page tree the same way.
 func (xRefTable *XRefTable) CountPageTreeLeaves(c context.Context) (int, error) {
 	if err := contextutil.Check(c); err != nil {
 		return 0, err
@@ -3373,7 +3501,7 @@ func (xRefTable *XRefTable) PageBoundaries(c context.Context, selectedPages type
 	var mb, cb *types.Rectangle
 	pbs := make([]PageBoundaries, xRefTable.PageCount)
 	if err := xRefTable.collectPageBoundariesForPageTree(
-		c, root, &mb, &cb, pbs, 0, &i, selectedPages, 0, NewPageTreeVisit(),
+		c, root, &mb, &cb, pbs, 0, &i, selectedPages, 0, nil, NewPageTreeVisit(),
 	); err != nil {
 		return nil, fmt.Errorf("page tree: %w", err)
 	}
