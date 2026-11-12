@@ -322,6 +322,7 @@ func finishAddedPages(c context.Context, ctxSrc, ctxDest *model.Context, fieldsD
 		ctxDest.Names = map[string]*model.Node{"Dests": dests}
 	}
 
+	carryOCProperties(ctxSrc, ctxDest, migrated)
 	return nil
 }
 

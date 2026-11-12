@@ -1914,6 +1914,10 @@ func MergeXRefTables(c context.Context, fName string, ctxSrc, ctxDest *model.Con
 		return fmt.Errorf("merge names: %w", err)
 	}
 
+	if err = runMergePhase(c, func() error { return mergeOCProperties(ctxSrc, ctxDest) }); err != nil {
+		return fmt.Errorf("merge optional content: %w", err)
+	}
+
 	if err = runMergePhase(c, func() error {
 		return mergeConfiguredOutlines(c, fName, origDestPageCount, ctxSrc, ctxDest, zip)
 	}); err != nil {

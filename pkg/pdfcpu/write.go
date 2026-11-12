@@ -440,7 +440,6 @@ func writeRootObject(c context.Context, ctx *model.Context) error {
 		d.Delete("Outlines")
 		d.Delete("OpenAction")
 		d.Delete("StructTreeRoot")
-		d.Delete("OCProperties")
 	}
 
 	if err = writeDictObject(c, ctx, objNumber, genNumber, d); err != nil {
